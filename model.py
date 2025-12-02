@@ -147,7 +147,7 @@ class MaskedAMPDiffusion(L.LightningModule):
                 "ema_state_dict": self.ema.state_dict(),
                 "optimizer_state_dict": self.trainer.optimizers[0].state_dict(),
                 "lr_scheduler_state_dict": self.trainer.lr_scheduler_configs[0].scheduler.state_dict(),
-                "noiser_state_dict": self.noiser.state_dict()}, f"logs/{self.fusion}_{self.num_categoricals - 5}/epoch{self.current_epoch}.pt")
+                "noiser_state_dict": self.noiser.state_dict()}, f"logs/epoch{self.current_epoch}.pt")
             
         # Apply EMA weights
         self.ema.store(itertools.chain(self.model.parameters(), self.noiser.parameters()))
