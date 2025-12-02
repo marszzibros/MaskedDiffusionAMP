@@ -274,136 +274,29 @@ class Attention(nn.Module):
     
     return x
 
-class CrossAttention(nn.Module):
-  def __init__(self, dim, n_heads, dropout, mlp_ratio=4,fusion="sigmoid"):
-    super().__init__()
-    self.n_heads = n_heads
-    self.fusion = fusion
-
-    self.norm = LayerNorm(dim)
-
-    self.attn_q = nn.Linear(dim, dim, bias=False)
-    self.attn_k = nn.Linear(dim, dim, bias=False)
-    self.attn_v = nn.Linear(dim, dim, bias=False)
-
-    self.attn_out = nn.Linear(dim, dim, bias=False)
-
-    self.norm2 = LayerNorm(dim)
-    self.mlp = nn.Sequential(
-      nn.Linear(dim, mlp_ratio * dim, bias=True),
-      nn.GELU(approximate='tanh'),
-      nn.Linear(mlp_ratio * dim, dim, bias=True))
-
-    self.dropout = dropout
-
-  def _get_bias_dropout_scale(self):
-    if self.training:
-      return bias_dropout_add_scale_fused_train
-    else:
-      return bias_dropout_add_scale_fused_inference
-    
-  def forward(self, x, s, rotary_cos_sin, seqlens, adaLN_parm):
-    x_skip = x
-    bias_dropout_scale_fn = self._get_bias_dropout_scale()
-    if self.fusion != "without_norm_cross":
-      x = self.norm(x)
-    x = modulate_fused(x, adaLN_parm[0], adaLN_parm[1])
-
-    # Compute Q, K, V and reshape
-    qkv = torch.cat([self.attn_q(x), self.attn_k(s), self.attn_v(s)], dim=-1)
-    qkv = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3, h=self.n_heads)
-
-    B, L, C, H, D = qkv.shape
-
-    # apply rotary pos embedding
-    cos, sin = rotary_cos_sin
-    
-    qkv = apply_rotary_pos_emb(qkv, cos.to(qkv.dtype), sin.to(qkv.dtype))  
-    qkv = rearrange(qkv, 'b s c h d -> b s (c h d)')
-    
-    # create masks for attending only "valid" tokens 
-    valid_mask = torch.arange(L, device=qkv.device)[None, :] < seqlens[:, None]  
-    valid_indices = valid_mask.flatten().nonzero(as_tuple=False).squeeze(-1)
-
-    qkv = qkv.flatten(0,1)[valid_indices].view(-1, 3, H, D)
-
-    cu_seqlens = torch.cat((
-        torch.tensor([0], device=x.device, dtype=torch.int32),
-        seqlens.to(dtype=torch.int32)
-    )).cumsum(dim=0, dtype=torch.int32)
-
-    x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
-        qkv, cu_seqlens, L, 0., causal=False)
-    
-    # apply masks
-    out_padded = torch.zeros(B * L, H, D, device=x.device, dtype=x.dtype)
-    out_padded[valid_indices] = x
-
-    # rearrange it back
-    x = rearrange(out_padded.view(B, L, H, D), 'b s h d -> b s (h d)')
-
-    x = bias_dropout_scale_fn(self.attn_out(x),
-                              None,
-                              adaLN_parm[2],
-                              x_skip,
-                              self.dropout)
-    
-    return x
-
-
 class DDiTBlock(nn.Module):
-  def __init__(self, dim, n_heads, cond_dim, dropout=0.1, fusion="sigmoid"):
+  def __init__(self, dim, n_heads, cond_dim, dropout=0.1):
     super().__init__()
     self.fusion = fusion
     self.attn_seqs = Attention(dim=dim, n_heads=n_heads, dropout=dropout, mlp_ratio=4)
-    if self.fusion not in ["attention_seq_only", "without_structure"]:
-      self.attn_strc = Attention(dim=dim, n_heads=n_heads, dropout=dropout, mlp_ratio=4)
-
-    
 
     self.dropout = dropout
-    
 
-    if self.fusion in ["sigmoid"]:
-      self.fuse_gate = nn.Sequential(
-        nn.Linear(2 * dim, 1),  
-        nn.Sigmoid()
-      )
-    else: 
-      self.attn_cros = CrossAttention(dim=dim, n_heads=n_heads, dropout=dropout, mlp_ratio=4, fusion=self.fusion)
-      self.adaLN_modulation_cross = nn.Linear(cond_dim, 3 * dim, bias=True)
-      self.adaLN_modulation_cross.weight.data.zero_()
-      self.adaLN_modulation_cross.bias.data.zero_()
 
     self.adaLN_modulation_seqs = nn.Linear(cond_dim, 6 * dim, bias=True)
-    self.adaLN_modulation_strc = nn.Linear(cond_dim, 6 * dim, bias=True)
 
     self.adaLN_modulation_seqs.weight.data.zero_()
     self.adaLN_modulation_seqs.bias.data.zero_()
 
-    self.adaLN_modulation_strc.weight.data.zero_()
-    self.adaLN_modulation_strc.bias.data.zero_()
 
-
-  def forward(self, x, s, rotary_cos_sin, c, seqlens):
+  def forward(self, x, rotary_cos_sin, c, seqlens):
 
     # (shift_msa, scale_msa, gate_msa, 
     #  shift_mlp, scale_mlp, gate_mlp) 
     adaLN_parm_seqs = self.adaLN_modulation_seqs(c)[:, None].chunk(6, dim=2)
-    adaLN_parm_strc = self.adaLN_modulation_strc(c)[:, None].chunk(6, dim=2)
-    BS, L, D = x.shape
-    seqs = self.attn_seqs(x, rotary_cos_sin, seqlens, adaLN_parm_seqs)  
-    if self.fusion not in ["without_structure"]:
-      strc = self.attn_strc(s, rotary_cos_sin, seqlens, adaLN_parm_strc)
 
-    if self.fusion in ["sigmoid"]:
-      gate = self.fuse_gate(torch.cat([seqs, strc], dim=-1) )
-      x = gate * seqs + (1 - gate) * strc
-    elif self.fusion in ["crossattention", "without_norm_cross"]:
-      adaLN_parm_cross = self.adaLN_modulation_cross(c)[:, None].chunk(3, dim=2)
-      x = self.attn_cros(seqs, strc, rotary_cos_sin, seqlens, adaLN_parm_cross)
-    elif self.fusion in ["without_structure"]:
-      x = seqs
+    BS, L, D = x.shape
+    x = self.attn_seqs(x, rotary_cos_sin, seqlens, adaLN_parm_seqs)  
     return x
 
 class EmbeddingLayer(nn.Module):
@@ -415,57 +308,20 @@ class EmbeddingLayer(nn.Module):
     def forward(self, x):
         return self.embedding[x]
 
-class StructureEmbeddingLayer(nn.Module):
-    def __init__(self, dim=256, num_categoricals=25):
-        super().__init__()
-        self.embedding = nn.Embedding(num_categoricals, dim)
-
-    def forward(self, x, seq_lens):
-        emb = self.embedding(x)
-        
-        BS, L, _ = x.shape
-        seq_lens = seq_lens
-
-        range_row = torch.arange(L, device=x.device).unsqueeze(0).expand(BS, -1)  # shape: (BS, L)
-        mask = range_row < seq_lens.unsqueeze(1) # BS x L
-
-        row_mask = mask.unsqueeze(2).unsqueeze(-1)   # BS x L x 1 x 1
-        col_mask = mask.unsqueeze(1).unsqueeze(-1)   # BS x 1 x L x 1
-
-        full_mask = row_mask & col_mask              # BS x L x L x 1
-        emb = emb * full_mask.float()
-
-        valid_counts = full_mask.float().sum(dim=2).clamp(min=1e-6)  # (BS, L, 1)
-        pooled = emb.sum(dim=2) / valid_counts
-
-        return pooled
 
 class DDitFinalLayer(nn.Module):
-  def __init__(self, hidden_size, out_channels, cond_dim, seq_length, num_categoricals):
+  def __init__(self, hidden_size, out_channels, cond_dim, seq_length ):
     super().__init__()
     
     self.hidden_size = hidden_size
     self.seq_length = seq_length
-    self.num_categoricals = num_categoricals
+
     self.norm_final = LayerNorm(hidden_size)
 
     self.linear_seq = nn.Linear(hidden_size, out_channels)
     self.linear_seq.weight.data.zero_()
     self.linear_seq.bias.data.zero_()
 
-    self.conv_strc = nn.Sequential(
-        nn.Conv2d(1, 4, kernel_size=5, padding=2),
-        nn.SiLU(),
-        nn.Conv2d(4, 8, kernel_size=5, padding=2),
-        nn.SiLU(),
-        nn.Dropout2d(0.2),
-        nn.Conv2d(8, self.num_categoricals, kernel_size=5, padding=2)
-    )
-
-
-    self.linear_strc = nn.Linear(self.num_categoricals, self.num_categoricals)
-    self.linear_strc.weight.data.zero_()
-    self.linear_strc.bias.data.zero_()
 
     self.adaLN_modulation = nn.Linear(cond_dim,
                                       2 * hidden_size,
@@ -481,11 +337,7 @@ class DDitFinalLayer(nn.Module):
 
     dp = torch.einsum("bih,bjh->bij", x, x) # [BS, L, L]
 
-    structure = self.conv_strc(dp.unsqueeze(1)).permute(0,2,3,1)  # [BS, 1, L, L]
-    structure = self.linear_strc(structure)
-    # [BS, 25, L, L]
-
-    return seqs, structure
+    return seqs
 
 class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
   def __init__(self, 
@@ -496,9 +348,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                n_heads = 8,
                n_blocks = 12,
                dropout = 0.2,
-               num_categoricals = 25,
-               scale_by_sigma = True,
-               fusion="sigmoid"):
+               scale_by_sigma = True,):
     super().__init__()
 
     self.vocab_size = vocab_size
@@ -507,8 +357,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     self.num_categoricals = num_categoricals
     self.seqs_embed = EmbeddingLayer(hidden_size,
                                       vocab_size)
-    if self.fusion not in ["without_structure"]:
-      self.strc_embed = StructureEmbeddingLayer(hidden_size, num_categoricals)
+
     self.sigma_map = TimestepEmbedder(cond_dim)
     self.rotary_emb = Rotary(
       hidden_size // n_heads)
@@ -526,8 +375,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       hidden_size,
       vocab_size,
       cond_dim,
-      seq_length,
-      num_categoricals)
+      seq_length)
     self.scale_by_sigma = scale_by_sigma
 
   def _get_bias_dropout_scale(self):
@@ -536,17 +384,16 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     else:
       return  bias_dropout_add_scale_fused_inference
 
-  def forward(self, x, sigma, seqlens, s):
+  def forward(self, x, sigma, seqlens):
 
     x = self.seqs_embed(x)
-    if self.fusion not in ["without_structure"]:
-      s = self.strc_embed(s, seqlens)
+
     c = F.silu(self.sigma_map(sigma))
-    # c = self.condition.mean(dim=1)
+
     rotary_cos_sin = self.rotary_emb(x)
 
     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
       for i in range(len(self.blocks)):
-        x = self.blocks[i](x, s, rotary_cos_sin, c, seqlens)
-      x, s = self.output_layer(x, c)
-    return x, s
+        x = self.blocks[i](x, rotary_cos_sin, c, seqlens)
+      x = self.output_layer(x, c)
+    return x

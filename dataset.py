@@ -358,117 +358,15 @@ class SwissProtDataset(Dataset):
         self.df['raw_sequence'] = self.df['sequence'].apply(lambda x: x.split(">")[1].split("<")[0])
         self.sequence_list = self.df['sequence']
         
-        self.map_paths = self.df['contact_map_path'].str.replace(
-            "/netfiles/vaillab/", "/gpfs3/scratch/jjung2/", regex=False
-        )
         self.max_length = max_length
         self.categorical_bin = categorical_bin
 
         self.tokens, self.tokens_dict = self.load_tokens()
         self.sequences = []
-        self.distance_maps = []
-        maps = []
 
-        # Encode sequences and prepare padded distance maps
-        for sequence, map_path in zip(self.sequence_list, self.map_paths):
+
+        for sequence in self.sequence_list:
             self.sequences.append(one_hot_encode_sequence(sequence, self.tokens_dict, max_length))
-            
-            loaded_map = np.load(map_path)
-            maps.append(loaded_map)
-
-        self.distance_tokens, self.distance_dicts = self.load_distance_category(maps)
-        # Digitize each padded full_map
-        for i, full_map in enumerate(maps):
-
-            digitized = np.digitize(full_map, bins=self.bin_edges, right=False) - 1
-            h, w = digitized.shape
-            
-            full_map = np.ones((self.max_length, self.max_length), dtype=np.uint8) * int(self.distance_dicts['<blank>'])
-            full_map[0, 1: w + 1] = int(self.distance_dicts['<SOS>'])
-            full_map[1: h + 1, 0] = int(self.distance_dicts['<SOS>'])
-            full_map[0,0] = 0
-            full_map[0,w + 1] = 0
-            full_map[h+1,0] = 0
-            
-
-            full_map[1:h + 1, 1:w + 1] = digitized
-
-            full_map[h + 1, 1: w + 1] = int(self.distance_dicts['<EOS>'])
-            full_map[1: w + 1, h + 1] = int(self.distance_dicts['<EOS>'])
-            full_map[w + 1,h + 1] = 0
-
-            self.distance_maps.append(full_map)       
-        # self.conditions = []
-        # for condition in self.df['secondary_structure']:
-        #     condition = condition.replace("<SOS>", "").replace("<EOS>", "")
-        #     condition = condition.replace("G", "H").replace("I", "H").replace("P", "H")
-        #     condition = condition.replace("E", "B")
-        #     condition = condition.replace("T", "S")
-        #     condition = condition.replace("-", "C")
-
-        #     self.conditions.append(list(condition))
-        # self.label_map = {'H': 0, 'B': 1, 'S': 2, 'C': 3}        
-        # self.encoded_conditions = [
-        #     [self.label_map[char] for char in cond] for cond in self.conditions
-        # ]
-                    
-
-    def load_distance_category(self, maps):
-        
-
-        distance_tokens = []
-        distance_dicts = {}
-        if os.path.exists(f"data/dict_swissprot_bin_{self.categorical_bin}.csv"):
-            with open(f"data/dict_swissprot_bin_{self.categorical_bin}.csv") as csv_file:
-                reader = csv.reader(csv_file)
-                self.bin_edges = np.array([float(value) for _, value in reader])  
-
-            with open(f"data/dict_swissprot_ids_{self.categorical_bin}.csv") as csv_file:
-                reader = list(csv.reader(csv_file)) 
-                distance_tokens = [edge for edge, _ in reader]
-                distance_dicts = {edge: int(distance_id) for edge, distance_id in reader}
-
-        else:
-            all_values = []
-            for map_file in maps:
-                upper = map_file[np.triu_indices_from(map_file, k=1)]
-                all_values.extend(upper)
-
-
-            all_values = np.array(all_values)
-            bin_edges = pd.qcut(all_values, q=self.categorical_bin, retbins=True, duplicates='drop')[1]
-            new_bin_edges = np.insert(bin_edges, 0, 0)
-
-            self.bin_edges = new_bin_edges
-
-            with open(f"data/dict_swissprot_bin_{self.categorical_bin}.csv", "w", newline="") as csv_file:
-                writer = csv.writer(csv_file)
-                for i, edge in enumerate(self.bin_edges):
-                    writer.writerow([i, edge])
-            with open(f"data/dict_swissprot_ids_{self.categorical_bin}.csv", "w", newline="") as csv_file:
-                writer = csv.writer(csv_file)
-                distance_tokens.append(0)
-                for i, edge in enumerate(self.bin_edges[:-1]):
-                    distance_dicts[i] = edge
-                    writer.writerow([edge, i])
-                    distance_tokens.append(edge)
-                distance_dicts[0] = 0
-                distance_dicts['<MASK>'] = len(self.bin_edges) - 1
-                writer.writerow(['<MASK>', len(self.bin_edges) - 1])
-                distance_tokens.append('<MASK>')
-                distance_dicts['<blank>'] = len(self.bin_edges)
-                writer.writerow(['<blank>', len(self.bin_edges)])
-                distance_tokens.append('<blank>')
-                distance_dicts['<SOS>'] = len(self.bin_edges) + 1
-                writer.writerow(['<SOS>', len(self.bin_edges)+1])
-                distance_tokens.append('<SOS>')
-                distance_dicts['<EOS>'] = len(self.bin_edges) + 2
-                writer.writerow(['<EOS>', len(self.bin_edges)+2])
-                distance_tokens.append('<EOS>')
-             
-            print("Created new data/dict_swissprot_ids.csv")
-        return distance_tokens, distance_dicts
-
 
 
     def load_tokens(self, special_tokens=['<blank>', '<MASK>']):
@@ -503,12 +401,11 @@ class SwissProtDataset(Dataset):
 
     def __getitem__(self, idx):
         seq = self.sequences[idx]
-        distance_maps = self.distance_maps[idx]
-        # encoded_conditions = self.encoded_conditions[idx]
+
+
         return {
             "sequence": seq,
-            "map": distance_maps,
-            # "condition":encoded_conditions
+
         }
 
 class SwissProtModule(L.LightningDataModule):

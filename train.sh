@@ -12,8 +12,6 @@
 #SBATCH --mail-type=ALL
 
 
-
-
 cd ${SLURM_SUBMIT_DIR}
 
 source ~/.bashrc

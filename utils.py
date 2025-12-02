@@ -67,12 +67,10 @@ class LogLinearNoise(Noiser):
 
 class Diffusion:
 
-    def __init__ (self, max_length, categorical_bin):
+    def __init__ (self, max_length):
         # self.dataset = SwissProtDataset(data_path="data/", max_length=max_length, categorical_bin=categorical_bin)
         self.mask_index = 23
         self.blank_index = 0
-        self.distance_mask_index = categorical_bin + 1
-        self.distance_blank_index = categorical_bin + 2
         self.neg_infinity = -float("inf")
     def _sample_t(self, n):
         _eps_t = torch.rand(n)
@@ -82,13 +80,11 @@ class Diffusion:
         t = (1 - 1e-3) * _eps_t + 1e-3
         return t
 
-    def q_xt(self, x, move_chance, strc=False):
-        if not strc:
-          move_indices = torch.rand(* x.shape, device=x.device) < move_chance
-          xt = torch.where(move_indices, self.mask_index, x)
-        elif strc:
-          move_indices = torch.rand(* x.shape, device=x.device) < move_chance
-          xt = torch.where(move_indices, self.distance_mask_index, x)
+    def q_xt(self, x, move_chance):
+
+        move_indices = torch.rand(* x.shape, device=x.device) < move_chance
+        xt = torch.where(move_indices, self.mask_index, x)
+
         return xt
     
     def _subs_parameterization(self, logits, xt):
