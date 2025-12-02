@@ -27,9 +27,9 @@ class MaskedAMPDiffusion(L.LightningModule):
                  num_steps=256,
                  learning_rate=2e-5,
                  scheduler_name="linear",
-                 num_tokens=24,
+                 num_tokens=49,
                  accumulate_grad_batches=4,
-                 max_length=66):
+                 max_length=68):
 
         super().__init__()
         self.blank_weight = blank_weight
@@ -49,7 +49,7 @@ class MaskedAMPDiffusion(L.LightningModule):
 
         if model_name == "DiT":
             # TODO: change 40 to real vocab size
-            self.model = DIT(vocab_size=self.num_tokens)
+            self.model = DIT(vocab_size=self.num_tokens, seq_length=max_length)
 
         self.ema = EMA(itertools.chain(self.model.parameters(), self.noiser.parameters()),
                                decay = 0.9999)
@@ -268,7 +268,7 @@ class MaskedAMPDiffusion(L.LightningModule):
 
 
             
-            index_to_token = {i: token for token, i in self.trainer.datamodule.full_dataset.tokens_dict.items()}
+            index_to_token = {i: token for token, i in self.trainer.datamodule.token_dict.items()}
 
             x = x.detach().cpu().numpy()
 

@@ -69,8 +69,8 @@ class Diffusion:
 
     def __init__ (self, max_length):
         # self.dataset = SwissProtDataset(data_path="data/", max_length=max_length, categorical_bin=categorical_bin)
-        self.mask_index = 23
-        self.blank_index = 0
+        self.mask_index = 48
+        self.blank_index = 30
         self.neg_infinity = -float("inf")
     def _sample_t(self, n):
         _eps_t = torch.rand(n)

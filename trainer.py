@@ -16,7 +16,7 @@ def main():
     os.system(f"rm -r logs")
     os.system(f"mkdir logs")
     # dataset = AMPDatasetModule(batch_size=256, pos_ratio=0.5)
-    dataset = SwissProtModule(data_path="data/", max_length=66, batch_size=64)
+    dataset = AMPDatasetModule(file_path="data/", max_length=68, batch_size=64, pos_ratio=1.0)
     model = MaskedAMPDiffusion(scheduler_name="cosine", learning_rate=lr, accumulate_grad_batches=1)
 
     # Initialize the logger

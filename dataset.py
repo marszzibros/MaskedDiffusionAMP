@@ -241,7 +241,11 @@ class AMPDatasets(Dataset):
         sample = self.sequences[idx]
         condition = self.condition[idx]
         label = 1 
-        return sample, condition, label
+        return {
+            "sequence": sample,
+            "condition": condition,
+            "label": label
+        }
 
 class NonAMPDatasets(Dataset):
     def __init__(self, data_path ="data/", max_length = 64, label = 0):
@@ -249,7 +253,7 @@ class NonAMPDatasets(Dataset):
         self.label_neg = label
 
         self.non_amp_df = pd.read_csv(os.path.join(data_path, "non_amps.csv"), index_col=0)
-        self.non_amp_df['Sequence'] = self.non_amp_df['Sequence'].apply(lambda x:"<SOS>"+x+"<EOS>")
+        self.non_amp_df['Sequence'] = self.non_amp_df['Sequence'].apply(lambda x:"<nblank><SOS>"+x+"<EOS><cblank>")
         
         conditions  = AMPConditions(pd.read_csv(os.path.join(data_path, "dbaasp.csv"), index_col=0))
 
@@ -284,7 +288,11 @@ class NonAMPDatasets(Dataset):
         sample = self.non_sequences[idx]
         condition = self.non_conditions[idx]
         label = self.label_neg
-        return sample, condition, label
+        return {
+            "sequence": sample,
+            "condition": condition,
+            "label": label
+        }
 
 class BatchSampler(Sampler):
     def __init__(self, pos_indices, neg_indices, batch_size, pos_ratio=0.5):
@@ -322,18 +330,18 @@ class BatchSampler(Sampler):
         return len(self.pos_indices) // self.pos_batch_size
     
 class AMPDatasetModule(L.LightningDataModule):
-    def __init__(self, file_path="data/", max_lengths=64, batch_size=128, pos_ratio=0.5):
+    def __init__(self, file_path="data/", max_length=64, batch_size=128, pos_ratio=0.5):
         super().__init__()
         self.file_path = file_path
-        self.max_lengths = max_lengths
+        self.max_length = max_length
         self.batch_size = batch_size
         self.pos_ratio = pos_ratio
 
     def setup(self, stage=None):
-        self.amp_dataset = AMPDatasets(data_path=self.file_path, max_length=self.max_lengths)
-        self.non_amp_dataset = NonAMPDatasets(data_path=self.file_path, max_length=self.max_lengths)
+        self.amp_dataset = AMPDatasets(data_path=self.file_path, max_length=self.max_length)
+        self.non_amp_dataset = NonAMPDatasets(data_path=self.file_path, max_length=self.max_length)
         self.full_dataset = ConcatDataset([self.amp_dataset, self.non_amp_dataset])
-
+        self.token_dict = self.amp_dataset.conditions.tokens_dict
         self.pos_indices = list(range(len(self.amp_dataset)))
         self.neg_indices = [i + len(self.amp_dataset) for i in range(len(self.non_amp_dataset))]
 
@@ -353,13 +361,12 @@ class AMPDatasetModule(L.LightningDataModule):
         )
 
 class SwissProtDataset(Dataset):
-    def __init__(self, data_path = "data/", max_length=66, categorical_bin=20):
+    def __init__(self, data_path = "data/", max_length=66):
         self.df = pd.read_csv(os.path.join(data_path, "swissprot.csv"))
         self.df['raw_sequence'] = self.df['sequence'].apply(lambda x: x.split(">")[1].split("<")[0])
         self.sequence_list = self.df['sequence']
         
         self.max_length = max_length
-        self.categorical_bin = categorical_bin
 
         self.tokens, self.tokens_dict = self.load_tokens()
         self.sequences = []
@@ -409,7 +416,7 @@ class SwissProtDataset(Dataset):
         }
 
 class SwissProtModule(L.LightningDataModule):
-    def __init__(self, data_path="data/", max_length=66, batch_size=128, categorical_bin=20):
+    def __init__(self, data_path="data/", max_length=66, batch_size=128):
         super().__init__()
         self.data_path = data_path
         self.max_length = max_length
@@ -419,8 +426,7 @@ class SwissProtModule(L.LightningDataModule):
         
     def setup(self, stage=None):
         self.full_dataset = SwissProtDataset(data_path=self.data_path, 
-                                             max_length=self.max_length, 
-                                             categorical_bin=self.categorical_bin)
+                                             max_length=self.max_length)
 
     def train_dataloader(self):
         return DataLoader(
