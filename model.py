@@ -70,50 +70,18 @@ class MaskedAMPDiffusion(L.LightningModule):
     def on_fit_start(self):
         self.ema.move_shadow_params_to_device(self.device)
         # self.num_tokens = len(self.trainer.datamodule.full_dataset.tokens)
-    def extract_lower_triangle(self, dist):
-        if len(dist.shape) == 4:
-            # dist: (BS, L, L, 25)
-            BS, L, _, C = dist.shape  # C = 25
-            tril_idx = torch.tril_indices(L, L, offset=-1) 
-            
-            lower_tri = dist[:, tril_idx[0], tril_idx[1], :] 
+     
+    def compute_nll_loss(self, output):
+        
+        output[:, :, self.diffusion.mask_index] = -float("inf") 
 
-        elif len(dist.shape) == 3:
-            # dist: (BS, L, L)
-            BS, L, _ = dist.shape  # C = 25
-            tril_idx = torch.tril_indices(L, L, offset=-1) 
-            
-            lower_tri = dist[:, tril_idx[0], tril_idx[1]] 
-            
-        return lower_tri            
-    def compute_nll_loss(self, output, strc=False):
-        if not strc:
-            output[:, :, self.diffusion.mask_index] = -float("inf") 
+        loss = F.cross_entropy(
+            output.view(-1, self.num_tokens),
+            self.samples_idx.view(-1),
+            reduction='none'
+        )
 
-            loss = F.cross_entropy(
-                output.view(-1, self.num_tokens),
-                self.samples_idx.view(-1),
-                reduction='none'
-            )
-
-
-            mask = (
-                (self.xt.view(-1) == self.diffusion.mask_index) |
-                (self.samples_idx.view(-1) == self.diffusion.blank_index)
-            )
-
-        lengths = self.pad_indices.sum(dim=1)
-        target_len = 30.0
-        sigma = 25
-        weights = torch.exp(-0.5 * ((lengths.float() - target_len) / sigma) ** 2)
-        seq_weights = weights[:, None].expand_as(self.pad_indices)
-        flat_weights = seq_weights.reshape(-1)
-
-        weighted_loss = loss[mask] * flat_weights[mask]
-        if weighted_loss.numel() == 0:
-            return torch.tensor(0.0, device=output.device)
-
-        return weighted_loss.sum() / flat_weights[mask].sum()
+        return loss.mean()
 
     
     def compute_loss(self, weight_tokens=1.5):
@@ -164,11 +132,10 @@ class MaskedAMPDiffusion(L.LightningModule):
             
             self.log("train_loss", loss * self.accumulate_grad_batches)  # Rescale for logging
             self.log("nll_loss", nll_loss)
-            self.log("nll_loss (structure)", nll_loss_structure)
+
         else:
             self.log("train_loss", loss * self.accumulate_grad_batches)
             self.log("nll_loss", nll_loss)
-            self.log("nll_loss (structure)", nll_loss_structure)
 
         return loss
 
@@ -306,6 +273,10 @@ class MaskedAMPDiffusion(L.LightningModule):
             x = x.detach().cpu().numpy()
 
             lengths = lengths.detach().cpu().numpy()
+            sequences = []
+            for i, (seq, length) in enumerate(zip(x, lengths)):
+                sequence = ''.join(index_to_token.get(token, '?') for token in seq)
+                sequences.append(sequence)
 
             sample_path = f"logs/generated_samples.txt"
             with open(sample_path, "a") as f:

@@ -277,7 +277,7 @@ class Attention(nn.Module):
 class DDiTBlock(nn.Module):
   def __init__(self, dim, n_heads, cond_dim, dropout=0.1):
     super().__init__()
-    self.fusion = fusion
+
     self.attn_seqs = Attention(dim=dim, n_heads=n_heads, dropout=dropout, mlp_ratio=4)
 
     self.dropout = dropout
@@ -347,14 +347,13 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                cond_dim = 256,
                n_heads = 8,
                n_blocks = 12,
-               dropout = 0.2,
-               scale_by_sigma = True,):
+               dropout = 0.2):
     super().__init__()
 
     self.vocab_size = vocab_size
     self.seq_length = seq_length
-    self.fusion = fusion
-    self.num_categoricals = num_categoricals
+
+
     self.seqs_embed = EmbeddingLayer(hidden_size,
                                       vocab_size)
 
@@ -368,7 +367,7 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       blocks.append(DDiTBlock(hidden_size,
                               n_heads,
                               cond_dim,
-                              dropout=dropout, fusion=fusion))
+                              dropout=dropout))
     self.blocks = nn.ModuleList(blocks)
     
     self.output_layer = DDitFinalLayer(
@@ -376,7 +375,6 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
       vocab_size,
       cond_dim,
       seq_length)
-    self.scale_by_sigma = scale_by_sigma
 
   def _get_bias_dropout_scale(self):
     if self.training:

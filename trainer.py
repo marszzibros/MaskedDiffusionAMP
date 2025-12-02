@@ -12,19 +12,18 @@ import os
 
 def main():
     lr = 1e-4
-    fusion = sys.argv[1]
-    categorical_bin = int(sys.argv[2])
-    os.system(f"rm -r logs/{fusion}_{categorical_bin}")
-    os.system(f"mkdir logs/{fusion}_{categorical_bin}")
+
+    os.system(f"rm -r logs")
+    os.system(f"mkdir logs")
     # dataset = AMPDatasetModule(batch_size=256, pos_ratio=0.5)
-    dataset = SwissProtModule(data_path="data/", max_length=66, batch_size=512, categorical_bin=categorical_bin)
-    model = MaskedAMPDiffusion(scheduler_name="cosine", learning_rate=lr, structure=True, accumulate_grad_batches=2, fusion=fusion, num_categoricals=categorical_bin + 5)
+    dataset = SwissProtModule(data_path="data/", max_length=66, batch_size=64)
+    model = MaskedAMPDiffusion(scheduler_name="cosine", learning_rate=lr, accumulate_grad_batches=1)
 
     # Initialize the logger
     wandb_logger = WandbLogger(
         project="AMP_Mask_Diffusion",
         save_dir="logs/",
-        name=f"DiT_{time.strftime('%Y%m%d_%H%M%S')}_Cosine_{lr}_{fusion}_{categorical_bin}",
+        name=f"DiT_{time.strftime('%Y%m%d_%H%M%S')}_Cosine_{lr}",
         log_model="all",
         offline=False
     )

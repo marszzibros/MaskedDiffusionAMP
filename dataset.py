@@ -354,7 +354,7 @@ class AMPDatasetModule(L.LightningDataModule):
 
 class SwissProtDataset(Dataset):
     def __init__(self, data_path = "data/", max_length=66, categorical_bin=20):
-        self.df = pd.read_csv(os.path.join(data_path, "pretrain_processed.csv"))
+        self.df = pd.read_csv(os.path.join(data_path, "swissprot.csv"))
         self.df['raw_sequence'] = self.df['sequence'].apply(lambda x: x.split(">")[1].split("<")[0])
         self.sequence_list = self.df['sequence']
         
