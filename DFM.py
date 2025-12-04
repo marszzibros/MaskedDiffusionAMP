@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
+from lightning.pytorch.callbacks import ModelCheckpoint
 import lightning as L
 import transformers
 from models import DIT, EMA
@@ -20,7 +21,8 @@ class DiscreteFlowMatching(L.LightningModule):
                  max_length=68,
                  mask_token_id=None, 
                  pad_token_id=None, 
-                 eta=0.0): 
+                 eta=0.0,
+                 output_dir=None): 
 
         super().__init__()
         self.save_hyperparameters()
@@ -40,9 +42,9 @@ class DiscreteFlowMatching(L.LightningModule):
         self.ema = EMA(self.model.parameters(), decay=0.9999)
         self.automatic_optimization = False
         
-        if self.global_rank == 0:
-            os.makedirs("results", exist_ok=True)
-            os.makedirs("logs", exist_ok=True)
+        # if self.global_rank == 0:
+        #     os.makedirs("results", exist_ok=True)
+        #     os.makedirs("logs", exist_ok=True)
 
     def forward(self, x, t, lengths):
         return self.model(x, t, lengths)
@@ -136,7 +138,7 @@ class DiscreteFlowMatching(L.LightningModule):
                 max_length=self.hparams.max_length
             )
 
-            path = "results/generated_samples.txt"
+            path = f"{self.hparams.output_dir}/generated_samples.txt"
             with open(path, "a") as f:
                 f.write(f"\n=== Epoch {self.current_epoch} ===\n")
                 for seq in sequences:
@@ -254,3 +256,13 @@ class DiscreteFlowMatching(L.LightningModule):
             self.scheduler = None
             
         return [self.optimizer]
+    
+    def configure_callbacks(self):
+        checkpoint = ModelCheckpoint(
+            dirpath=f"{self.hparams.output_dir}",
+            filename="model-{epoch:02d}",
+            every_n_epochs=10,
+            save_top_k=-1,
+            save_last=True
+        )
+        return [checkpoint]
