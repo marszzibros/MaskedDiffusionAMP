@@ -4,6 +4,7 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
 from model import MaskedAMPDiffusion
+from DFM import DiscreteFlowMatching
 from dataset import AMPDatasetModule, SwissProtModule
 
 import time
@@ -14,16 +15,35 @@ def main():
     lr = 1e-4
 
     os.system(f"rm -r logs")
+    os.system(f"rm -r results")
     os.system(f"mkdir logs")
+    os.system(f"mkdir results")
     # dataset = AMPDatasetModule(batch_size=256, pos_ratio=0.5)
     dataset = AMPDatasetModule(file_path="data/", max_length=68, batch_size=64, pos_ratio=1.0)
-    model = MaskedAMPDiffusion(scheduler_name="cosine", learning_rate=lr, accumulate_grad_batches=1)
+    
+    # model = MaskedAMPDiffusion(scheduler_name="cosine", learning_rate=lr, accumulate_grad_batches=1)
+    
+    model = DiscreteFlowMatching(
+        model_name="DiT",
+        num_epochs=301,
+        warmup_ratio=0.05,
+        num_samples=5,
+        num_steps=20,
+        learning_rate=lr,
+        scheduler_name="cosine",
+        num_tokens=49,
+        accumulate_grad_batches=1,
+        max_length=68,
+        mask_token_id=48, # Crucial: Must pass the actual ID for <mask>
+        pad_token_id=0, # Crucial: Must pass the actual ID for <blank>
+        eta=0.1
+    )
 
     # Initialize the logger
     wandb_logger = WandbLogger(
         project="AMP_Mask_Diffusion",
         save_dir="logs/",
-        name=f"DiT_{time.strftime('%Y%m%d_%H%M%S')}_Cosine_{lr}",
+        name=f"DiT_{time.strftime('%Y%m%d_%H%M%S')}_DSF_{lr}",
         log_model="all",
         offline=False
     )

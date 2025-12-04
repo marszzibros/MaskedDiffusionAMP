@@ -1,21 +1,14 @@
 import torch
 import torch.nn.functional as F
-from torch.utils.data import ConcatDataset, DataLoader
-
+from torch.distributions.categorical import Categorical
 import lightning as L
-
-from dataset import AMPDatasets, NonAMPDatasets, BatchSampler 
-
 import itertools
 import transformers
-
 import matplotlib.pyplot as plt
-
 from utils import Diffusion, LogLinearNoise
 from models import DIT, EMA
-
 import os
-import numpy as np
+
 
 class MaskedAMPDiffusion(L.LightningModule):
     def __init__(self, 

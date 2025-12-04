@@ -343,9 +343,9 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
   def __init__(self, 
                vocab_size,
                seq_length = 66,
-               hidden_size = 768,
+               hidden_size = 1536,
                cond_dim = 256,
-               n_heads = 8,
+               n_heads = 12,
                n_blocks = 12,
                dropout = 0.2):
     super().__init__()
