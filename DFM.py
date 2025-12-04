@@ -256,13 +256,3 @@ class DiscreteFlowMatching(L.LightningModule):
             self.scheduler = None
             
         return [self.optimizer]
-    
-    def configure_callbacks(self):
-        checkpoint = ModelCheckpoint(
-            dirpath=f"{self.hparams.output_dir}",
-            filename="model-{epoch:02d}",
-            every_n_epochs=10,
-            save_top_k=-1,
-            save_last=True
-        )
-        return [checkpoint]
