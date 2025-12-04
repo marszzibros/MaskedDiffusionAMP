@@ -57,7 +57,7 @@ def main():
         warmup_ratio=0.05,
         num_samples=5,
         num_steps=20,
-        learning_rate=1e-5,
+        learning_rate=1e-6,
         scheduler_name="cosine",
         num_tokens=49,
         accumulate_grad_batches=1,
@@ -70,7 +70,7 @@ def main():
     
 
 
-    force_saver = ForceSaveCallback(dirpath=output_dir, every_n_epochs=10)
+    force_saver = ForceSaveCallback(dirpath=output_dir, every_n_epochs=200)
     
     wandb_logger = WandbLogger(
         project="AMP_Mask_Diffusion",
