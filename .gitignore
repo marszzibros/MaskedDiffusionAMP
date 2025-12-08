@@ -2,3 +2,5 @@
 /logs
 /__pycache__
 /results
+/output
+*.out

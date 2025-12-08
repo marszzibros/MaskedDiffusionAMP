@@ -1,15 +1,28 @@
 import argparse
 import torch
-import json
 import os
+import math
 from tqdm import tqdm
-from math import ceil
 from DFM import DiscreteFlowMatching
 
 def load_vocab(vocab_path):
-    """Loads the token dictionary from a JSON file."""
-    with open(vocab_path, 'r') as f:
-        token_dict = json.load(f)
+    if not os.path.exists(vocab_path):
+        raise FileNotFoundError(f"Vocabulary file not found at {vocab_path}. You need the token_dict to decode outputs.")
+    
+    token_dict = {}
+    with open(vocab_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            # Split by comma: "<blank>,0" -> ["<blank>", "0"]
+            try:
+                token, idx = line.strip().split(',')
+                token_dict[token] = int(idx)
+            except ValueError:
+                print(f"Skipping malformed line in vocab: {line}")
+                continue
+    
     return token_dict
 
 def main(args):
@@ -17,65 +30,68 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 2. Load Model
-    print(f"Loading checkpoint from: {args.checkpoint}")
-    model = DiscreteFlowMatching.load_from_checkpoint(args.checkpoint)
+    # 2. Load Model from Checkpoint
+    print(f"Loading model from: {args.checkpoint_path}")
+    # load_from_checkpoint automatically restores hyperparameters and weights (including EMA if saved correctly)
+    model = DiscreteFlowMatching.load_from_checkpoint(args.checkpoint_path)
     model.to(device)
     model.eval()
 
-    # Override hyperparameters if provided in args
-    if args.eta is not None:
-        model.eta = args.eta
-        print(f"Overriding stochasticity parameter eta to: {args.eta}")
+    # Override eta (stochasticity) if provided
+    current_eta = args.eta if args.eta is not None else model.eta
+    print(f"Sampling with stochasticity (eta): {current_eta}")
 
-    # 3. Load Vocab
-    if not os.path.exists(args.vocab_path):
-        raise FileNotFoundError(f"Vocabulary file not found at {args.vocab_path}. Please save your token_dict as a JSON file.")
-    
+    # 3. Load Vocabulary
     token_dict = load_vocab(args.vocab_path)
-    print(f"Loaded vocabulary with {len(token_dict)} tokens.")
+    print(f"Loaded vocabulary size: {len(token_dict)}")
 
-    # 4. Prepare Batches
-    num_samples = args.num_samples
+    # 4. Prepare Batching
+    # We split N samples into smaller batches to prevent OOM errors
+    total_samples = args.num_samples
     batch_size = args.batch_size
-    num_batches = ceil(num_samples / batch_size)
-    
-    print(f"Generating {num_samples} samples in {num_batches} batches...")
+    num_batches = math.ceil(total_samples / batch_size)
+
+    print(f"Generating {total_samples} samples in {num_batches} batches...")
 
     # 5. Generation Loop
-    all_sequences = []
+    # We open the file once and append batch results to it
+    os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     
-    with open(args.output_file, 'w') as f_out:
+    with open(args.output_file, "w") as f_out:
         with torch.no_grad():
-            for i in tqdm(range(num_batches), desc="Generating"):
-                # Calculate current batch size (handle last batch)
-                current_batch_size = min(batch_size, num_samples - (i * batch_size))
-                
-                # Generate samples
-                # Note: max_length uses the model's saved hparam unless overridden
+            for i in tqdm(range(num_batches), desc="Sampling"):
+                # Determine how many samples to generate in this specific batch
+                # (The last batch might be smaller than batch_size)
+                samples_generated_so_far = i * batch_size
+                samples_remaining = total_samples - samples_generated_so_far
+                current_batch_n = min(batch_size, samples_remaining)
+
+                # Call the model's generation method
                 sequences = model.generate_sample(
                     tokens_dict=token_dict,
-                    num_samples=current_batch_size,
-                    max_length=args.max_length if args.max_length else model.hparams.max_length,
-                    eta=model.eta
+                    num_samples=current_batch_n,
+                    max_length=model.hparams.max_length, # Use the max_length the model was trained with
+                    eta=current_eta
                 )
-                
-                # Write immediately to file to save memory
+
+                # Write to file
                 for seq in sequences:
-                    f_out.write(seq + '\n')
-                    
-    print(f"Successfully saved {num_samples} samples to {args.output_file}")
+                    f_out.write(seq + "\n")
+
+    print(f"Done! {total_samples} samples saved to: {args.output_file}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate samples from Discrete Flow Matching model")
+    parser = argparse.ArgumentParser(description="Generate protein samples from trained DFM model.")
     
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to the .ckpt model file")
-    parser.add_argument("--vocab_path", type=str, required=True, help="Path to the vocab/token_dict JSON file")
+    # Required arguments
+    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the .ckpt file")
+    parser.add_argument("--vocab_path", type=str, required=True, help="Path to the vocab csv file (e.g. ./data/vocab.csv)")
     parser.add_argument("--num_samples", type=int, required=True, help="Total number of samples to generate")
-    parser.add_argument("--output_file", type=str, default="generated_samples.txt", help="Output text file path")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for generation")
-    parser.add_argument("--eta", type=float, default=None, help="Override stochasticity (eta) value")
-    parser.add_argument("--max_length", type=int, default=None, help="Override sequence length")
+    
+    # Optional arguments
+    parser.add_argument("--output_file", type=str, default="generated_samples.txt", help="Where to save the results")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for generation (adjust based on GPU memory)")
+    parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
 
     args = parser.parse_args()
     main(args)
