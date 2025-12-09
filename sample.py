@@ -26,35 +26,26 @@ def load_vocab(vocab_path):
     return token_dict
 
 def main(args):
-    # 1. Setup Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 2. Load Model from Checkpoint
     print(f"Loading model from: {args.checkpoint_path}")
-    # load_from_checkpoint automatically restores hyperparameters and weights (including EMA if saved correctly)
     model = DiscreteFlowMatching.load_from_checkpoint(args.checkpoint_path)
     model.to(device)
     model.eval()
 
-    # Override eta (stochasticity) if provided
     current_eta = args.eta if args.eta is not None else model.eta
     print(f"Sampling with stochasticity (eta): {current_eta}")
 
-    # 3. Load Vocabulary
     token_dict = load_vocab(args.vocab_path)
     print(f"Loaded vocabulary size: {len(token_dict)}")
 
-    # 4. Prepare Batching
-    # We split N samples into smaller batches to prevent OOM errors
     total_samples = args.num_samples
     batch_size = args.batch_size
     num_batches = math.ceil(total_samples / batch_size)
 
     print(f"Generating {total_samples} samples in {num_batches} batches...")
 
-    # 5. Generation Loop
-    # We open the file once and append batch results to it
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     
     with open(args.output_file, "w") as f_out:

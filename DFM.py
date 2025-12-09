@@ -45,6 +45,26 @@ class DiscreteFlowMatching(L.LightningModule):
         # if self.global_rank == 0:
         #     os.makedirs("results", exist_ok=True)
         #     os.makedirs("logs", exist_ok=True)
+        
+    def on_save_checkpoint(self, checkpoint):
+        """
+        Manually save the EMA state into the checkpoint dictionary.
+        This ensures that when you call trainer.save_checkpoint(), 
+        the EMA weights go with it.
+        """
+        if self.ema is not None:
+            # Assuming your EMA class has a state_dict() method
+            # If it doesn't, you need to save its internal shadow params list
+            checkpoint['ema_state_dict'] = self.ema.state_dict()
+
+    def on_load_checkpoint(self, checkpoint):
+        """
+        Manually load the EMA state from the checkpoint dictionary.
+        """
+        if self.ema is not None and 'ema_state_dict' in checkpoint:
+            self.ema.load_state_dict(checkpoint['ema_state_dict'])
+            # Ensure EMA device matches model device after loading
+            self.ema.move_shadow_params_to_device(self.device)
 
     def forward(self, x, t, lengths):
         return self.model(x, t, lengths)

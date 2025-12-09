@@ -10,6 +10,7 @@ import datetime
 import time
 import sys
 import os
+import json
 
 class ForceSaveCallback(Callback):
     """
@@ -47,26 +48,57 @@ def main():
     output_dir = os.path.join("./", "output", run_name)
     
     os.makedirs(output_dir, exist_ok=True)
-    dataset = AMPDatasetModule(file_path="data/", max_length=68, batch_size=64, pos_ratio=1.0)
     
     # model = MaskedAMPDiffusion(scheduler_name="cosine", learning_rate=lr, accumulate_grad_batches=1)
     
+    model_config = {
+        "model_name": "DiT",
+        "batch_size":64,
+        "num_epochs": 601,
+        "warmup_ratio": 0.05,
+        "num_samples": 5,
+        "num_steps": 20,
+        "learning_rate": 1e-4,
+        "scheduler_name": "cosine",
+        "num_tokens": 49,
+        "accumulate_grad_batches": 1,
+        "max_length": 68,
+        "mask_token_id": 48, # Crucial: Must pass the actual ID for <mask>
+        "pad_token_id": 0,   # Crucial: Must pass the actual ID for <blank>
+        "eta": 0.1,
+        "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
+        # Add conditioning params if using the CFG version:
+        # "num_mechanisms": 10,
+        # "cond_dropout": 0.1
+    }
+
+    config_path = os.path.join(output_dir, "model_config.json")
+    with open(config_path, "w") as f:
+        json.dump(model_config, f, indent=4)
+    print(f"[Config] Saved model hyperparameters to: {config_path}")
+    
+    dataset = AMPDatasetModule(
+        file_path="data/", 
+        max_length=model_config['max_length'], 
+        batch_size=model_config['batch_size'], 
+        pos_ratio=1.0)
+    
     model = DiscreteFlowMatching(
-        model_name="DiT",
-        num_epochs=601,
-        warmup_ratio=0.05,
-        num_samples=5,
-        num_steps=20,
-        learning_rate=1e-6,
-        scheduler_name="cosine",
-        num_tokens=49,
-        accumulate_grad_batches=1,
-        max_length=68,
-        mask_token_id=48, # Crucial: Must pass the actual ID for <mask>
-        pad_token_id=0, # Crucial: Must pass the actual ID for <blank>
-        eta=0.1,
-        output_dir=output_dir
-    )
+        model_name=model_config['model_name'], 
+        num_epochs=model_config['num_epochs'],
+        warmup_ratio=model_config['warmup_ratio'],
+        num_samples=model_config['num_samples'],
+        num_steps=model_config['num_steps'],
+        learning_rate=model_config['learning_rate'],
+        scheduler_name=model_config['scheduler_name'],
+        num_tokens=model_config['num_tokens'],
+        accumulate_grad_batches=model_config['accumulate_grad_batches'],
+        max_length=model_config['max_length'],
+        mask_token_id=model_config['mask_token_id'], 
+        pad_token_id=model_config['pad_token_id'], 
+        eta=model_config['eta'],
+        output_dir=model_config['output_dir']
+        )
     
 
 
