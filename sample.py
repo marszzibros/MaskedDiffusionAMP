@@ -56,6 +56,8 @@ def main(args):
                 samples_generated_so_far = i * batch_size
                 samples_remaining = total_samples - samples_generated_so_far
                 current_batch_n = min(batch_size, samples_remaining)
+                
+                model.hparams.num_steps = 500
 
                 # Call the model's generation method
                 sequences = model.generate_sample(
@@ -83,6 +85,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", type=str, default="generated_samples.txt", help="Where to save the results")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for generation (adjust based on GPU memory)")
     parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
+    parser.add_argument("--steps", type=int, default=100, help="Number of steps for generation")
 
     args = parser.parse_args()
     main(args)
