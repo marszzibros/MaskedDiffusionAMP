@@ -57,7 +57,7 @@ def main():
         "num_epochs": 601,
         "warmup_ratio": 0.05,
         "num_samples": 5,
-        "num_steps": 20,
+        "num_steps": 100,
         "learning_rate": 1e-4,
         "scheduler_name": "cosine",
         "num_tokens": 49,
@@ -65,7 +65,7 @@ def main():
         "max_length": 68,
         "mask_token_id": 48, # Crucial: Must pass the actual ID for <mask>
         "pad_token_id": 0,   # Crucial: Must pass the actual ID for <blank>
-        "eta": 0.1,
+        "eta": 5,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         # Add conditioning params if using the CFG version:
         # "num_mechanisms": 10,

@@ -78,6 +78,9 @@ class DiscreteFlowMatching(L.LightningModule):
         else:
             x_1 = batch['sequence']
             
+        # TODO: Add condition
+        print(batch['condition'][0])
+            
         batch_size = x_1.shape[0]
         seq_len = x_1.shape[1]
         
