@@ -48,6 +48,9 @@ def main(args):
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     
+    conditions = {'species': [1,2], 'groups': [2,5], 'mic': 7}
+    scales = {'species': 1.5, 'groups': 1.5, 'mic': 3.0}
+    
     with open(args.output_file, "w") as f_out:
         with torch.no_grad():
             for i in tqdm(range(num_batches), desc="Sampling"):
@@ -62,8 +65,10 @@ def main(args):
                 # Call the model's generation method
                 sequences = model.generate_sample(
                     tokens_dict=token_dict,
+                    conditions=conditions,
+                    scales=scales,
                     num_samples=current_batch_n,
-                    max_length=model.hparams.max_length, # Use the max_length the model was trained with
+                    max_length=model.hparams.max_length,
                     eta=current_eta
                 )
 

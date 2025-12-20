@@ -231,7 +231,9 @@ class AMPDatasets(Dataset):
             #####
             # AMPGAN is not using raw mic rather than one hot encoded MIC
             #####
-            self.condition.append(np.concatenate([encoded_species, encoded_groups, encoded_objects, [row[6]]]))
+            # self.condition.append(np.concatenate([encoded_species, encoded_groups, encoded_objects, [row[6]]]))
+            
+            self.condition.append(np.concatenate([encoded_species, encoded_groups, encoded_objects, encoded_mic]))
 
 
     def __len__(self):
@@ -265,21 +267,26 @@ class NonAMPDatasets(Dataset):
             encoded_species = np.zeros(6)
             encoded_groups  = np.zeros(5)   
             encoded_objects = np.zeros(5)
+            encoded_mic     = np.zeros(10)
 
             # random species
             np.random.seed(42)
             encoded_species[np.random.randint(0,6)] = 1
 
-            mic_value = np.random.uniform(
-            (np.log(150 + 1e-6) - conditions.log_mean_mic) / conditions.log_std_mic,
-            (np.log(conditions.df['MIC'].max() + 1e-6) - conditions.log_mean_mic) / conditions.log_std_mic
-            )
+            # This is raw mic value
+            # mic_value = np.random.uniform(
+            # (np.log(150 + 1e-6) - conditions.log_mean_mic) / conditions.log_std_mic,
+            # (np.log(conditions.df['MIC'].max() + 1e-6) - conditions.log_mean_mic) / conditions.log_std_mic
+            # )
+            
+            # This is binarized mic value
+            encoded_mic[np.random.randint(len(encoded_mic))] = 1
 
             self.non_sequences.append(one_hot_encode_sequence(row[0], conditions.tokens_dict, self.max_length))
             self.non_conditions.append(np.concatenate([encoded_species, 
                                                        encoded_groups, 
                                                        encoded_objects, 
-                                                       [mic_value]]))
+                                                       encoded_mic]))
 
     def __len__(self):
         return len(self.non_sequences)

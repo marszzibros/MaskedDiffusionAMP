@@ -175,20 +175,39 @@ class TimestepEmbedder(nn.Module):
     t_emb = self.mlp(t_freq)
     return t_emb
 
-class LabelEmbedder(nn.Module):
-  """Embeds class labels into vector representations.
-  
-  Also handles label dropout for classifier-free guidance.
-  """
-  def __init__(self, num_classes, cond_size):
-    super().__init__()
-    # +1 for the NULL/Unknown token used in CFG
-    self.embedding_table = nn.Embedding(num_classes + 1, cond_size)
-    self.num_classes = num_classes
 
-  def forward(self, labels):
-    embeddings = self.embedding_table(labels)
-    return embeddings
+class VectorEmbedder(nn.Module):
+    """
+    Embeds vector inputs (Binary or One-Hot) into the condition dimension.
+    Includes a learned 'null_embedding' for Classifier-Free Guidance.
+    """
+    def __init__(self, input_dim, cond_dim):
+        super().__init__()
+
+        self.linear = nn.Linear(input_dim, cond_dim)
+        self.null_embedding = nn.Parameter(torch.randn(cond_dim))
+        
+        # Initialize
+        nn.init.normal_(self.null_embedding, std=0.02)
+
+    def forward(self, x, drop_mask=None):
+        """
+        x: (Batch, input_dim) - FloatTensor (Binary or One-Hot)
+        drop_mask: (Batch,) - BoolTensor. True means 'Drop Condition' (use Null).
+        """
+        # 1. Project input features
+        emb = self.linear(x)
+        
+        # 2. Apply CFG Dropout
+        if drop_mask is not None:
+            # Expand null_embedding to match batch size: (B, cond_dim)
+            null_emb_expanded = self.null_embedding.unsqueeze(0).expand(x.size(0), -1)
+            
+            # Where mask is True, use Null. Where False, use projected input.
+            drop_mask = drop_mask.view(-1, 1)
+            emb = torch.where(drop_mask, null_emb_expanded, emb)
+            
+        return emb
     
 #################################################################################
 #                                Core Model                                     #
@@ -347,75 +366,67 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                n_heads = 12,
                n_blocks = 24,
                dropout = 0.2,
-               # New arguments for Conditioning
-               num_mechanisms = 10,
-               num_targets = 10,
-               num_mics = 20):
+               # Updated Condition Dimensions
+               species_dim = 6,  # 6 different species (Binary)
+               groups_dim = 5,   # 5 different groups (Binary)
+               mic_dim = 10):    # 10 mic values (One-Hot)
     super().__init__()
 
     self.vocab_size = vocab_size
     self.seq_length = seq_length
 
-
-    self.seqs_embed = EmbeddingLayer(hidden_size,
-                                     vocab_size)
-
-    # Timestep embedder outputs vector of size cond_dim
+    self.seqs_embed = EmbeddingLayer(hidden_size, vocab_size)
     self.sigma_map = TimestepEmbedder(cond_dim)
     
-    # --- NEW: Conditional Embedders ---
-    # We use LabelEmbedder which includes +1 for NULL/CFG token
-    self.mech_embedder = LabelEmbedder(num_mechanisms, cond_dim)
-    self.target_embedder = LabelEmbedder(num_targets, cond_dim)
-    self.mic_embedder = LabelEmbedder(num_mics, cond_dim)
+    # --- UPDATED: Use VectorEmbedder ---
+    self.species_embedder = VectorEmbedder(species_dim, cond_dim)
+    self.groups_embedder  = VectorEmbedder(groups_dim, cond_dim)
+    self.mic_embedder     = VectorEmbedder(mic_dim, cond_dim)
     
-    self.rotary_emb = Rotary(
-      hidden_size // n_heads)
+    self.rotary_emb = Rotary(hidden_size // n_heads)
 
     blocks = []
     for _ in range(n_blocks):
-      blocks.append(DDiTBlock(hidden_size,
-                              n_heads,
-                              cond_dim,
-                              dropout=dropout))
+      blocks.append(DDiTBlock(hidden_size, n_heads, cond_dim, dropout=dropout))
     self.blocks = nn.ModuleList(blocks)
     
-    self.output_layer = DDitFinalLayer(
-      hidden_size,
-      vocab_size,
-      cond_dim,
-      seq_length)
+    self.output_layer = DDitFinalLayer(hidden_size, vocab_size, cond_dim, seq_length)
 
   def _get_bias_dropout_scale(self):
     if self.training:
       return bias_dropout_add_scale_fused_train
     else:
-      return  bias_dropout_add_scale_fused_inference
+      return bias_dropout_add_scale_fused_inference
 
-  def forward(self, x, sigma, seqlens, mechanism_ids, target_ids, mic_ids):
+  def forward(self, x, sigma, seqlens, species_vec=None, species_mask=None, groups_vec=None, groups_mask=None, mic_vec=None, mic_mask=None, cond_embedding=None):
     """
-    x: Input sequence indices
+    x: Sequence indices
     sigma: Timesteps
-    seqlens: Sequence lengths
-    mechanism_ids, target_ids, mic_ids: Required conditional indices.
+    *_vec: Feature vectors (Float)
+    *_mask: Dropout masks (Bool, True=Drop)
     """
 
     x = self.seqs_embed(x)
 
-    # 1. Get Timestep Embedding (MLP(t))
-    # This is our base conditioning vector 'c'
+    # 1. Base Conditioning (Time)
     t_emb = self.sigma_map(sigma)
     
-    # 2. Add Condition Embeddings (Additive Conditioning)
-    # If explicit indices are provided, embed them and add to t_emb
+    # 2. Add Biological Conditions
     cond_accum = torch.zeros_like(t_emb)
     
-    cond_accum = cond_accum + self.mech_embedder(mechanism_ids)
-    cond_accum = cond_accum + self.target_embedder(target_ids)
-    cond_accum = cond_accum + self.mic_embedder(mic_ids)
+    if species_vec is not None:
+        cond_accum = cond_accum + self.species_embedder(species_vec, species_mask)
+    
+    if groups_vec is not None:
+        cond_accum = cond_accum + self.groups_embedder(groups_vec, groups_mask)
+        
+    if mic_vec is not None:
+        cond_accum = cond_accum + self.mic_embedder(mic_vec, mic_mask)
+        
+    if cond_embedding is not None:
+        cond_accum = cond_accum + cond_embedding
 
-    # 3. Combine and Activate
-    # c = SiLU( MLP(t) + Embed(y) )
+    # 3. Combine
     c = F.silu(t_emb + cond_accum)
 
     rotary_cos_sin = self.rotary_emb(x)
