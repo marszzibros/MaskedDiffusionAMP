@@ -30,14 +30,14 @@ class ForceSaveCallback(Callback):
         # last_path = os.path.join(self.dirpath, "last.ckpt")
         # trainer.save_checkpoint(last_path)
         
-        if (epoch + 1) % self.every_n_epochs == 0:
+        if epoch % self.every_n_epochs == 0 and epoch != 0:
             filename = f"model-epoch_{epoch:02d}.ckpt"
             save_path = os.path.join(self.dirpath, filename)
             
             trainer.save_checkpoint(save_path)
             
-            if trainer.global_rank == 0:
-                print(f"\n[Checkpointer] Saved interval checkpoint: {filename}")
+            # if trainer.global_rank == 0:
+            #     print(f"\n[Checkpointer] Saved interval checkpoint: {filename}")
 
 def main():
 
@@ -54,11 +54,11 @@ def main():
     model_config = {
         "model_name": "DiT",
         "batch_size":64,
-        "num_epochs": 601,
+        "num_epochs": 1601,
         "warmup_ratio": 0.05,
         "num_samples": 5,
         "num_steps": 100,
-        "learning_rate": 1e-4,
+        "learning_rate": 1e-6,
         "scheduler_name": "cosine",
         "num_tokens": 49,
         "accumulate_grad_batches": 1,
@@ -102,7 +102,7 @@ def main():
     
 
 
-    force_saver = ForceSaveCallback(dirpath=output_dir, every_n_epochs=200)
+    force_saver = ForceSaveCallback(dirpath=output_dir, every_n_epochs=800)
     
     wandb_logger = WandbLogger(
         project="AMP_Mask_Diffusion",
@@ -112,7 +112,7 @@ def main():
         offline=False
     )
     trainer = L.Trainer(
-            max_epochs=601,
+            max_epochs=model_config['num_epochs'],
             logger=wandb_logger,
             callbacks=[force_saver, LearningRateMonitor(logging_interval='step')], 
         )
