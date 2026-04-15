@@ -110,4 +110,17 @@ class Diffusion:
         # Gumbel-max sampling
         gumbel_noise = -torch.log(-torch.log(torch.rand_like(categorical_probs) + 1e-10) + 1e-10)
         return (torch.log(categorical_probs + 1e-10) + gumbel_noise).argmax(dim=-1)
+      
+      
+    # def _sample_categorical(self, categorical_probs, temperature=1.0):
+    #     # 1. Apply temperature scaling to the probabilities
+    #     if temperature != 1.0:
+    #         # We have to scale the logits, so we convert probs to logits, scale, and back to probs
+    #         logits = torch.log(categorical_probs + 1e-10)
+    #         scaled_logits = logits / temperature
+    #         categorical_probs = torch.softmax(scaled_logits, dim=-1)
+
+    #     # 2. Standard Gumbel-max sampling
+    #     gumbel_noise = -torch.log(-torch.log(torch.rand_like(categorical_probs) + 1e-10) + 1e-10)
+    #     return (torch.log(categorical_probs + 1e-10) + gumbel_noise).argmax(dim=-1)
 

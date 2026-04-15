@@ -58,7 +58,7 @@ def main():
         "warmup_ratio": 0.05,
         "num_samples": 5,
         "num_steps": 100,
-        "learning_rate": 1e-6,
+        "learning_rate": 1e-5,
         "scheduler_name": "cosine",
         "num_tokens": 49,
         "accumulate_grad_batches": 1,
