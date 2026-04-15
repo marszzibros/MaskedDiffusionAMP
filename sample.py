@@ -72,7 +72,9 @@ def main(args):
                     num_samples=current_batch_n,
                     max_length=model.hparams.max_length,
                     eta=current_eta,
-                    temperature=args.temperature
+                    temperature=args.temperature,
+                    k_samples=args.k_samples,
+                    use_charge_filter=args.use_charge_filter
                 )
 
                 # Write to file
@@ -95,6 +97,8 @@ if __name__ == "__main__":
     parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
     parser.add_argument("--steps", type=int, default=100, help="Number of steps for generation")
+    parser.add_argument("--k_samples", type=int, default=1, help="Number of candidate samples to generate per token step when filtering by charge")
+    parser.add_argument("--use_charge_filter", action="store_true", help="Turn on the Biopython net charge filter (requires k_samples > 1 for diversity selection)")
 
     args = parser.parse_args()
     main(args)

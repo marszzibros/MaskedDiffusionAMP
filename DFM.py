@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 from lightning.pytorch.callbacks import ModelCheckpoint
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
 import lightning as L
 import transformers
 # from models import DIT, EMA
@@ -184,6 +185,14 @@ class DiscreteFlowMatching(L.LightningModule):
                 for seq in sequences:
                     f.write(f"{seq}\n")
 
+    def _decode_to_string(self, x_np, lens_np, index_to_token):
+        sequences = []
+        for seq, length in zip(x_np, lens_np):
+            valid_seq = seq[:length] 
+            seq_str = ''.join(index_to_token.get(idx, '?') for idx in valid_seq)
+            sequences.append(seq_str)
+        return sequences
+
     def _prepare_vector(self, indices_or_vec, dim, batch_size):
         """Helper to convert inputs into vectors (B, dim)"""
         out_vec = torch.zeros(batch_size, dim, device=self.device)
@@ -206,7 +215,7 @@ class DiscreteFlowMatching(L.LightningModule):
         return out_vec
 
     @torch.no_grad()
-    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=68, eta=None, temperature=1.0):
+    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=68, eta=None, temperature=1.0, k_samples=1, use_charge_filter=False):
         if eta is None:
             eta = self.eta
 
@@ -317,16 +326,77 @@ class DiscreteFlowMatching(L.LightningModule):
                     logits[:, :, self.pad_token_id] = -float('inf')
                 
                 x1_probs = F.softmax(logits, dim=-1)
-                x1_sample = Categorical(x1_probs).sample()
                 
-                unmask_rate = dt * (1 + eta * t) / (1 - t + 1e-6)
-                unmask_rate = min(unmask_rate, 1.0)
-                
-                should_unmask = torch.rand_like(x.float()) < unmask_rate
-                
-                is_masked = (x == self.mask_token_id)
-                
-                x = torch.where(is_masked & should_unmask, x1_sample, x)
+                if use_charge_filter and k_samples > 1:
+                    # Sample K candidates from the clean distribution
+                    x1_samples = Categorical(x1_probs).sample((k_samples,)) # (K, B, L)
+                    
+                    best_x1_list = []
+                    lens_np = lengths.cpu().numpy()
+                    
+                    for b in range(num_samples):
+                        valid_cands = []
+                        seq_len = lens_np[b]
+                        
+                        # Look at the "dream" sequence (x1) for this batch item
+                        cands_np = x1_samples[:, b, :].cpu().numpy()
+                        
+                        for k_idx in range(k_samples):
+                            valid_tokens = cands_np[k_idx][:seq_len]
+                            # exclude first two and last two tokens
+                            if len(valid_tokens) > 4:
+                                aa_tokens = valid_tokens[2:-2]
+                            else:
+                                aa_tokens = valid_tokens
+                                
+                            aa_str = ''.join(index_to_token.get(idx, '?') for idx in aa_tokens)
+                            # aa_str = aa_str.replace('<MASK>', '').replace('<blank>', '')
+                            aa_str = aa_str.upper()
+                            
+                            clean_aa = "".join([c for c in aa_str if c in "ACDEFGHIKLMNPQRSTVWY"])
+                            print('clean aa:', clean_aa)
+                            
+                            pa = ProteinAnalysis(clean_aa)
+                            charge = pa.charge_at_pH(7.0)
+                            diversity = len(set(clean_aa)) - 0.1 * (clean_aa.count('K') + clean_aa.count('R') + clean_aa.count('L'))
+                            
+                            if 2 <= charge <= 9:
+                                valid_cands.append((k_idx, diversity))
+                                
+                        if len(valid_cands) > 0:
+                            # Sort by diversity, pick the highest
+                            valid_cands.sort(key=lambda item: item[1], reverse=True)
+                            best_idx = valid_cands[0][0]
+                        else:
+                            # If no candidate meets the charge criteria, fallback to the 0th sample
+                            best_idx = 0
+                        
+                        print('best idx:', best_idx)
+                        best_x1_list.append(x1_samples[best_idx, b, :])
+                        
+                    # Reconstruct the optimal x1 sample across the batch
+                    x1_sample = torch.stack(best_x1_list)
+                    
+                    # Now proceed with standard unmasking using the chosen x1
+                    unmask_rate = dt * (1 + eta * t) / (1 - t + 1e-6)
+                    unmask_rate = min(unmask_rate, 1.0)
+                    
+                    should_unmask = torch.rand_like(x.float()) < unmask_rate
+                    is_masked = (x == self.mask_token_id)
+                    
+                    x = torch.where(is_masked & should_unmask, x1_sample, x)
+                    
+                else:
+                    x1_sample = Categorical(x1_probs).sample()
+                    
+                    unmask_rate = dt * (1 + eta * t) / (1 - t + 1e-6)
+                    unmask_rate = min(unmask_rate, 1.0)
+                    
+                    should_unmask = torch.rand_like(x.float()) < unmask_rate
+                    
+                    is_masked = (x == self.mask_token_id)
+                    
+                    x = torch.where(is_masked & should_unmask, x1_sample, x)
                 
                 if eta > 0 and (t + dt < 1.0):
                     remask_rate = dt * eta
@@ -344,15 +414,8 @@ class DiscreteFlowMatching(L.LightningModule):
                 
                 t += dt
 
-            sequences = []
-            x_np = x.cpu().numpy()
-            lens_np = lengths.cpu().numpy() 
+            sequences = self._decode_to_string(x.cpu().numpy(), lengths.cpu().numpy(), index_to_token)
             
-            for seq, length in zip(x_np, lens_np):
-                valid_seq = seq[:length] 
-                seq_str = ''.join(index_to_token.get(idx, '?') for idx in valid_seq)
-                sequences.append(seq_str)
-                
             return sequences
 
         finally:
