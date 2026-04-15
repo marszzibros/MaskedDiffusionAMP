@@ -32,6 +32,8 @@ def main(args):
     print(f"Loading model from: {args.checkpoint_path}")
     model = DiscreteFlowMatching.load_from_checkpoint(args.checkpoint_path)
     model.to(device)
+    if hasattr(model, 'ema') and model.ema is not None:
+        model.ema.move_shadow_params_to_device(device)
     model.eval()
 
     current_eta = args.eta if args.eta is not None else model.eta
@@ -48,7 +50,7 @@ def main(args):
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     
-    conditions = {'species': [1,2], 'groups': [2,5], 'mic': 7}
+    conditions = {'species': [1], 'groups': [2], 'mic': 7}
     scales = {'species': 1.5, 'groups': 1.5, 'mic': 3.0}
     
     with open(args.output_file, "w") as f_out:
@@ -60,7 +62,7 @@ def main(args):
                 samples_remaining = total_samples - samples_generated_so_far
                 current_batch_n = min(batch_size, samples_remaining)
                 
-                model.hparams.num_steps = 500
+                model.hparams.num_steps = args.steps
 
                 # Call the model's generation method
                 sequences = model.generate_sample(
@@ -69,7 +71,8 @@ def main(args):
                     scales=scales,
                     num_samples=current_batch_n,
                     max_length=model.hparams.max_length,
-                    eta=current_eta
+                    eta=current_eta,
+                    temperature=args.temperature
                 )
 
                 # Write to file
@@ -90,6 +93,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", type=str, default="generated_samples.txt", help="Where to save the results")
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for generation (adjust based on GPU memory)")
     parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
     parser.add_argument("--steps", type=int, default=100, help="Number of steps for generation")
 
     args = parser.parse_args()
