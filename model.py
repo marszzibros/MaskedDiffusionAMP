@@ -4,7 +4,6 @@ from torch.distributions.categorical import Categorical
 import lightning as L
 import itertools
 import transformers
-import matplotlib.pyplot as plt
 from utils import Diffusion, LogLinearNoise
 from models import DIT, EMA
 import os

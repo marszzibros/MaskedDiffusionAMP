@@ -215,7 +215,7 @@ class DiscreteFlowMatching(L.LightningModule):
         return out_vec
 
     @torch.no_grad()
-    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=68, eta=None, temperature=1.0, k_samples=1, use_charge_filter=False):
+    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=68, eta=None, temperature=1.0, k_samples=1, use_charge_filter=False, shortest_length=14, longest_length=36):
         if eta is None:
             eta = self.eta
 
@@ -253,7 +253,7 @@ class DiscreteFlowMatching(L.LightningModule):
                            dtype=torch.long, 
                            device=device)
             
-            lengths = torch.randint(low=20, high=32, size=(num_samples,), device=device, dtype=torch.int32)
+            lengths = torch.randint(low=shortest_length, high=longest_length, size=(num_samples,), device=device, dtype=torch.int32)
             
             t = 0.0
             steps = self.hparams.num_steps

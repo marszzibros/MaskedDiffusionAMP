@@ -50,9 +50,9 @@ def main(args):
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     
-    conditions = {'species': [1], 'groups': [2], 'mic': 7}
-    scales = {'species': 1.5, 'groups': 1.5, 'mic': 3.0}
+    scales = {'species': 2.0, 'groups': 2.0, 'mic': 2.0}
     
+    import random
     with open(args.output_file, "w") as f_out:
         with torch.no_grad():
             for i in tqdm(range(num_batches), desc="Sampling"):
@@ -63,6 +63,18 @@ def main(args):
                 current_batch_n = min(batch_size, samples_remaining)
                 
                 model.hparams.num_steps = args.steps
+                
+                # Prepare varying MIC tensor
+                mic_tensor = torch.zeros(current_batch_n, model.dims['mic'], device=device)
+                for b in range(current_batch_n):
+                    m = random.randint(max(0, args.mic - 1), min(model.dims['mic'] - 1, args.mic + 1))
+                    mic_tensor[b, m] = 1.0
+
+                conditions = {
+                    'species': args.species, 
+                    'groups': args.groups, 
+                    'mic': mic_tensor
+                }
 
                 # Call the model's generation method
                 sequences = model.generate_sample(
@@ -93,12 +105,15 @@ if __name__ == "__main__":
     
     # Optional arguments
     parser.add_argument("--output_file", type=str, default="generated_samples.txt", help="Where to save the results")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for generation (adjust based on GPU memory)")
+    parser.add_argument("--batch_size", type=int, default=256, help="Batch size for generation (adjust based on GPU memory)")
     parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
     parser.add_argument("--steps", type=int, default=100, help="Number of steps for generation")
     parser.add_argument("--k_samples", type=int, default=1, help="Number of candidate samples to generate per token step when filtering by charge")
     parser.add_argument("--use_charge_filter", action="store_true", help="Turn on the Biopython net charge filter (requires k_samples > 1 for diversity selection)")
+    parser.add_argument("--species", type=int, nargs="+", default=[0], help="List of species indices")
+    parser.add_argument("--groups", type=int, nargs="+", default=[0], help="List of groups indices")
+    parser.add_argument("--mic", type=int, default=2, help="Base MIC value")
 
     args = parser.parse_args()
     main(args)
