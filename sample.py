@@ -50,7 +50,7 @@ def main(args):
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     
-    scales = {'species': 2.0, 'groups': 2.0, 'mic': 2.0}
+    scales = {'species': 1.0, 'groups': 1.0, 'mic': 1.0}
     
     import random
     with open(args.output_file, "w") as f_out:
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, required=True, help="Total number of samples to generate")
     
     # Optional arguments
-    parser.add_argument("--output_file", type=str, default="generated_samples.txt", help="Where to save the results")
+    parser.add_argument("--output_file", type=str, default="test.txt", help="Where to save the results")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size for generation (adjust based on GPU memory)")
     parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
