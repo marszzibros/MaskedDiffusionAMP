@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
@@ -5,7 +6,6 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from Bio.SeqUtils.ProtParam import ProteinAnalysis
 import lightning as L
 import transformers
-# from models import DIT, EMA
 from models import EMA
 from models.DiTwithCondition import DIT
 import os
@@ -29,7 +29,10 @@ class DiscreteFlowMatching(L.LightningModule):
                  cond_dropout=0.1,
                  species_dim=6,
                  groups_dim=5,
-                 mic_dim=10): 
+                 mic_dim=10,
+                 hidden_size=1536,
+                 n_blocks=24,
+                 n_heads=12):
 
         super().__init__()
         self.save_hyperparameters()
@@ -47,11 +50,14 @@ class DiscreteFlowMatching(L.LightningModule):
 
         if model_name == "DiT":
             # Initialize DIT with specific vector dimensions
-            self.model = DIT(vocab_size=num_tokens, 
+            self.model = DIT(vocab_size=num_tokens,
                              seq_length=max_length,
                              species_dim=species_dim,
                              groups_dim=groups_dim,
-                             mic_dim=mic_dim)
+                             mic_dim=mic_dim,
+                             hidden_size=hidden_size,
+                             n_blocks=n_blocks,
+                             n_heads=n_heads)
 
         self.ema = EMA(self.model.parameters(), decay=0.9999)
         self.automatic_optimization = False
@@ -171,19 +177,33 @@ class DiscreteFlowMatching(L.LightningModule):
             example_cond = {'species': [1], 'groups': [2], 'mic': 7}
             example_scales = {'species': 1.5, 'groups': 1.5, 'mic': 3.0}
 
+            datamodule = self.trainer.datamodule
             sequences = self.generate_sample(
                 tokens_dict=tokens_dict,
                 conditions=example_cond,
                 scales=example_scales,
                 num_samples=self.hparams.num_samples,
-                max_length=self.hparams.max_length
+                max_length=self.hparams.max_length,
+                length_pool=getattr(datamodule, 'length_pool', None),
+                decode_fn=getattr(datamodule, 'decode', None),
             )
 
+            # For SAFE, log whether each sample is a chemically valid molecule --
+            # a token string can be well-formed and still not decode.
+            to_smiles = getattr(datamodule, 'smiles_from_safe', None)
             path = f"{self.hparams.output_dir}/generated_samples.txt"
             with open(path, "a") as f:
                 f.write(f"\n=== Epoch {self.current_epoch} ===\n")
+                valid = 0
                 for seq in sequences:
+                    smiles = to_smiles(seq) if to_smiles is not None else None
+                    valid += smiles is not None
                     f.write(f"{seq}\n")
+                    if to_smiles is not None:
+                        f.write(f"  -> {smiles if smiles else 'INVALID'}\n")
+                if to_smiles is not None:
+                    f.write(f"valid: {valid}/{len(sequences)}\n")
+                    self.log("sample_validity", valid / max(len(sequences), 1), prog_bar=True)
 
     def _decode_to_string(self, x_np, lens_np, index_to_token):
         sequences = []
@@ -215,7 +235,14 @@ class DiscreteFlowMatching(L.LightningModule):
         return out_vec
 
     @torch.no_grad()
-    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=68, eta=None, temperature=1.0, k_samples=1, use_charge_filter=False, shortest_length=14, longest_length=36):
+    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=68, eta=None, temperature=1.0, k_samples=1, use_charge_filter=False, shortest_length=14, longest_length=36, length_pool=None, decode_fn=None, score_fn=None):
+        """
+        length_pool: array of real token lengths to draw generation lengths from.
+                     Falls back to uniform [shortest_length, longest_length).
+        decode_fn:   ids -> string. Defaults to joining raw vocab tokens.
+        score_fn:    string -> (is_valid, score), used to rank the k_samples
+                     candidates. Defaults to the peptide net-charge filter.
+        """
         if eta is None:
             eta = self.eta
 
@@ -253,8 +280,17 @@ class DiscreteFlowMatching(L.LightningModule):
                            dtype=torch.long, 
                            device=device)
             
-            lengths = torch.randint(low=shortest_length, high=longest_length, size=(num_samples,), device=device, dtype=torch.int32)
-            
+            if length_pool is not None and len(length_pool) > 0:
+                # Draw from the real corpus length distribution. A SAFE molecule
+                # is ~300 tokens; a uniform [14, 36) draw would only ever produce
+                # truncated fragments.
+                pool = torch.as_tensor(np.asarray(length_pool), dtype=torch.int32)
+                picks = torch.randint(low=0, high=pool.numel(), size=(num_samples,))
+                lengths = pool[picks].to(device)
+            else:
+                lengths = torch.randint(low=shortest_length, high=longest_length, size=(num_samples,), device=device, dtype=torch.int32)
+            lengths = lengths.clamp(max=max_length).to(torch.int32)
+
             t = 0.0
             steps = self.hparams.num_steps
             dt = 1.0 / steps
@@ -327,7 +363,7 @@ class DiscreteFlowMatching(L.LightningModule):
                 
                 x1_probs = F.softmax(logits, dim=-1)
                 
-                if use_charge_filter and k_samples > 1:
+                if (use_charge_filter or score_fn is not None) and k_samples > 1:
                     # Sample K candidates from the clean distribution
                     x1_samples = Categorical(x1_probs).sample((k_samples,)) # (K, B, L)
                     
@@ -343,26 +379,36 @@ class DiscreteFlowMatching(L.LightningModule):
                         
                         for k_idx in range(k_samples):
                             valid_tokens = cands_np[k_idx][:seq_len]
+
+                            if score_fn is not None:
+                                # Representation-specific filter (for SAFE: does
+                                # this decode to a parseable molecule at all).
+                                candidate = decode_fn(valid_tokens) if decode_fn is not None \
+                                    else ''.join(index_to_token.get(idx, '?') for idx in valid_tokens)
+                                is_valid, score = score_fn(candidate)
+                                if is_valid:
+                                    valid_cands.append((k_idx, score))
+                                continue
+
                             # exclude first two and last two tokens
                             if len(valid_tokens) > 4:
                                 aa_tokens = valid_tokens[2:-2]
                             else:
                                 aa_tokens = valid_tokens
-                                
+
                             aa_str = ''.join(index_to_token.get(idx, '?') for idx in aa_tokens)
-                            # aa_str = aa_str.replace('<MASK>', '').replace('<blank>', '')
                             aa_str = aa_str.upper()
-                            
+
                             clean_aa = "".join([c for c in aa_str if c in "ACDEFGHIKLMNPQRSTVWY"])
-                            print('clean aa:', clean_aa)
-                            
+
                             pa = ProteinAnalysis(clean_aa)
                             charge = pa.charge_at_pH(7.0)
                             diversity = len(set(clean_aa)) - 0.1 * (clean_aa.count('K') + clean_aa.count('R') + clean_aa.count('L'))
-                            
+
                             if 2 <= charge <= 9:
                                 valid_cands.append((k_idx, diversity))
-                                
+
+
                         if len(valid_cands) > 0:
                             # Sort by diversity, pick the highest
                             valid_cands.sort(key=lambda item: item[1], reverse=True)
@@ -370,8 +416,7 @@ class DiscreteFlowMatching(L.LightningModule):
                         else:
                             # If no candidate meets the charge criteria, fallback to the 0th sample
                             best_idx = 0
-                        
-                        print('best idx:', best_idx)
+
                         best_x1_list.append(x1_samples[best_idx, b, :])
                         
                     # Reconstruct the optimal x1 sample across the batch
@@ -414,9 +459,11 @@ class DiscreteFlowMatching(L.LightningModule):
                 
                 t += dt
 
-            sequences = self._decode_to_string(x.cpu().numpy(), lengths.cpu().numpy(), index_to_token)
-            
-            return sequences
+            if decode_fn is not None:
+                x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                return [decode_fn(seq[:length]) for seq, length in zip(x_np, lens_np)]
+
+            return self._decode_to_string(x.cpu().numpy(), lengths.cpu().numpy(), index_to_token)
 
         finally:
             self.ema.restore(self.model.parameters())

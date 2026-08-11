@@ -3,14 +3,15 @@ import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint, Callback
 
-from model import MaskedAMPDiffusion
 from DFM import DiscreteFlowMatching
-from dataset import AMPDatasetModule, SwissProtModule
+from dataset import AMPSafeDataModule
 import datetime
 import time
 import sys
 import os
 import json
+
+import numpy as np
 
 class ForceSaveCallback(Callback):
     """
@@ -49,40 +50,47 @@ def main():
     
     os.makedirs(output_dir, exist_ok=True)
     
-    # model = MaskedAMPDiffusion(scheduler_name="cosine", learning_rate=lr, accumulate_grad_batches=1)
-    
     model_config = {
         "model_name": "DiT",
-        "batch_size":64,
+        "batch_size": 8,
         "num_epochs": 1601,
         "warmup_ratio": 0.05,
         "num_samples": 5,
         "num_steps": 100,
         "learning_rate": 1e-4,
         "scheduler_name": "cosine",
-        "num_tokens": 49,
-        "accumulate_grad_batches": 1,
-        "max_length": 68,
-        "mask_token_id": 48, # Crucial: Must pass the actual ID for <mask>
-        "pad_token_id": 0,   # Crucial: Must pass the actual ID for <blank>
+        "accumulate_grad_batches": 8,
+        "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
         "eta": 5,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
-        # Add conditioning params if using the CFG version:
-        # "num_mechanisms": 10,
-        # "cond_dropout": 0.1
+        "cond_dropout": 0.1,
+        # hidden_size: 1024/12 is not an integer, so 16 heads (head_dim 64).
+        # The 1536/24 config is 738M params / ~34 GB peak -- H200 only.
+        "hidden_size": 1024,
+        "n_blocks": 16,
+        "n_heads": 16,
     }
+
+    dataset = AMPSafeDataModule(
+        file_path="molecular_dataset/dataset/data/",
+        max_length=model_config['max_length'],
+        batch_size=model_config['batch_size'])
+
+    # Built here (rather than left to Lightning) so the vocab and the special
+    # token ids come from the tokenizer instead of being hardcoded.
+    dataset.setup()
+    model_config['num_tokens'] = dataset.num_tokens
+    model_config['mask_token_id'] = dataset.mask_token_id
+    model_config['pad_token_id'] = dataset.pad_token_id
+    model_config['max_length'] = dataset.max_length
+    print(f"[Data] {len(dataset.full_dataset)} examples, vocab {dataset.num_tokens}, "
+          f"max_length {dataset.max_length}, median length {int(np.median(dataset.length_pool))}")
 
     config_path = os.path.join(output_dir, "model_config.json")
     with open(config_path, "w") as f:
         json.dump(model_config, f, indent=4)
     print(f"[Config] Saved model hyperparameters to: {config_path}")
-    
-    dataset = AMPDatasetModule(
-        file_path="data/", 
-        max_length=model_config['max_length'], 
-        batch_size=model_config['batch_size'], 
-        pos_ratio=1.0)
-    
+
     model = DiscreteFlowMatching(
         model_name=model_config['model_name'], 
         num_epochs=model_config['num_epochs'],
@@ -95,9 +103,13 @@ def main():
         accumulate_grad_batches=model_config['accumulate_grad_batches'],
         max_length=model_config['max_length'],
         mask_token_id=model_config['mask_token_id'], 
-        pad_token_id=model_config['pad_token_id'], 
+        pad_token_id=model_config['pad_token_id'],
         eta=model_config['eta'],
-        output_dir=model_config['output_dir']
+        output_dir=model_config['output_dir'],
+        cond_dropout=model_config['cond_dropout'],
+        hidden_size=model_config['hidden_size'],
+        n_blocks=model_config['n_blocks'],
+        n_heads=model_config['n_heads'],
         )
     
 

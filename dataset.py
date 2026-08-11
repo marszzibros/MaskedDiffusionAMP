@@ -1,453 +1,303 @@
+import os
+
+import numpy as np
+import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, Sampler
+from torch.utils.data import Dataset, DataLoader
 import lightning as L
 
-import pandas as pd
-import numpy as np
+import safe as sf
+from safe import SAFETokenizer
+from rdkit import Chem, RDLogger
 
-import random
-import ast
-import copy 
-import os
-import csv
-
-def identify_tokens(sequence):
-
-    token = []
-    token_long = False
-    tokening = ""
-    for word in sequence:
-
-        if (word != "<" and word !=">") and not token_long:
-            token.append(word)
-        elif word == "<":
-            token_long = True
-            tokening += word
-        elif token_long and word != ">":
-            tokening += word
-        elif token_long and word == ">":
-            token_long = False
-            tokening += word
-            token.append(tokening)
-            tokening = ""
-
-    return token
-
-def one_hot_encode_sequence(sequence, token_dicts, seq_length):
-
-    one_hot_encoded = np.zeros((len(token_dicts), seq_length))
-    tokenized_sequence = identify_tokens(sequence)
-
-    for i, token in enumerate(tokenized_sequence):
-
-        one_hot_encoded[int(token_dicts[token])][i] = 1  
+# SAFE decoding of a half-trained model produces a lot of invalid fragments;
+# RDKit logs every one of them at error level otherwise.
+RDLogger.DisableLog('rdApp.*')
 
 
-    for i  in range(len(tokenized_sequence), seq_length):
+# Condition layout expected by DiscreteFlowMatching.training_step:
+#   [0:6]   species  one-hot
+#   [6:11]  groups   multi-hot
+#   [11:16] objects  multi-hot  (sliced out and ignored by the model)
+#   [16:26] MIC bin  one-hot
+TARGET_SPECIES = ['escherichia coli', 'pseudomonas aeruginosa', 'klebsiella pneumoniae',
+                  'staphylococcus aureus', 'bacillus subtilis', 'staphylococcus epidermidis']
+TARGET_GROUPS = ['GRAM-', 'GRAM+', 'MAMMALIAN CELL', 'FUNGUS', 'OTHER']
+TARGET_OBJECTS = ['LIPID BILAYER', 'DNA / RNA', 'CYTOPLASMIC PROTEIN', 'MEMBRANE PROTEIN', 'OTHER']
 
-        one_hot_encoded[int(token_dicts['<blank>'])][i] = 1  
-
-    return np.array(one_hot_encoded)
-
-def decode_condition_vectors(condition_labels, conditions):
-    species = []
-    objects = []
-    groups = []
-    mic = []
-    condition_label_copy = copy.deepcopy(condition_labels)
-    for i, condition_label in enumerate(condition_label_copy[0:3]):
-        condition_label_copy[i] = {v: k for k, v in condition_label.items()}
-
-    for condition in conditions:
+CONDITION_DIM = len(TARGET_SPECIES) + len(TARGET_GROUPS) + len(TARGET_OBJECTS) + 10
 
 
-        species.append(condition_label_copy[0][np.where(condition[0:6] == 1)[0][0]])
-        objects.append(f'{[condition_label_copy[1][i] for i in np.where(condition[6:11] == 1)[0]]}')
-        groups.append(f'{[condition_label_copy[2][i] for i in np.where(condition[11:16] == 1)[0]]}')
-        if np.where(condition[16:] == 1)[0][0] == 0:
-            mic.append(f'{[0, condition_label_copy[3][np.where(condition[16:] == 1)[0][0]]]}')
-        elif np.where(condition[16:] == 1)[0][0] == 9:
-            value = condition_label_copy[3][np.where(condition[16:] == 1)[0][0]]
-            mic.append(f'{[value,value * 5]}')
-        elif np.where(condition[16:] == 1)[0].size != 0:
-            mic.append(f'{[condition_label_copy[3][np.where(condition[16:] == 1)[0][0] - 1],condition_label_copy[3][np.where(condition[16:] == 1)[0][0]]]}')
-        else:
-            mic.append(f'{[9999,10000]}')
-
-    df_dict = {'speices' :species, 
-               'objects' :objects, 
-               'groups' :groups, 
-               'mic' :mic, 
-               }
-    df = pd.DataFrame(df_dict)
-    return df
-
-def find_occurrences(sequence, token):
-    occurrences = []
-    start = 0
-
-    while True:
-        start = sequence.find(token, start)
-        if start == -1:
-            break
-        occurrences.append(start)
-        start += len(token)  
-    return occurrences
-
-def decode_sequences(tokens, sequences, generate_sample=False):
-    tokens_copy = copy.deepcopy(tokens)
-    tokens_copy = {int(v): k for k, v in tokens.items()}
-    final_sequence = []
-
-    one_hot_encoded = np.zeros((sequences.shape[0],sequences.shape[1], sequences.shape[2]))
-    for seq_ind, generated_sequence in enumerate(sequences):
-
-        for i, j in enumerate(np.argmax(generated_sequence, axis = 0)):
-            one_hot_encoded[seq_ind][j][i] = 1
-    
-    for i, sequence in enumerate(one_hot_encoded):
-        sequence_list = []
-        for row in sequence.T:
-            if np.where(row == 1)[0].size == 1:
-                sequence_list.append(tokens_copy[np.where(row == 1)[0][0]])
-        final_sequence.append("".join(sequence_list))
-
-    if generate_sample:
-
-        cropped_sequence_right = []
-        for i, sequence, in enumerate(final_sequence):
-            index = find_occurrences(sequence, '<EOS>')
-            if len(index) != 0:
-                if sequence[index[0] + 5: index[0] + 10] == "<AMD>" and index[0] + 10 < sequences.shape[2]:
-                    cropped_sequence_right.append(sequence[:index[0] + 10])
-                elif sequence[index[0] + 5: index[0] + 13] == "<cblank>" and index[0] + 13 < sequences.shape[2]:
-                    cropped_sequence_right.append(sequence[:index[0] + 13])
-                else:
-                    cropped_sequence_right.append(sequence[:index[0] + 5])
-            else:
-                cropped_sequence_right.append(f"{sequence}")
+def parse_list(value):
+    """amp.csv stores targetGroups / targetObjects as stringified python lists."""
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return []
+    return [item.strip().strip("'\"") for item in value.strip('[]').split(',') if item.strip()]
 
 
-        return cropped_sequence_right
-    else:
-        return final_sequence
-    
-class AMPConditions:
-    def __init__(self, df):
+class AMPSafeConditions:
+    """Joins the peptide table, the per-species activity table and the SAFE strings."""
+
+    def __init__(self, data_path, mic_bins=10):
+        dbaasp_dir = os.path.join(data_path, "dbaasp")
+        safe_dir = os.path.join(data_path, "safe")
+
+        amp = pd.read_csv(os.path.join(dbaasp_dir, "amp.csv"))
+        activity = pd.read_csv(os.path.join(dbaasp_dir, "amp_activity.csv"))
+        safe = pd.read_csv(os.path.join(safe_dir, "amp_safe.csv"))
+
+        amp['targetGroups'] = amp['targetGroups'].apply(parse_list)
+        amp['targetObjects'] = amp['targetObjects'].apply(parse_list)
+
+        safe = safe.dropna(subset=['safe'])
+        safe = safe[safe['safe'].str.len() > 0]
+
+        # One row per (peptide, species): species and MIC are genuine per-example
+        # labels rather than something collapsed onto the peptide.
+        df = activity.merge(amp[['amp_id', 'targetGroups', 'targetObjects']], on='amp_id')
+        df = df.merge(safe[['amp_id', 'safe']], on='amp_id')
+        df = df[df['species'].isin(TARGET_SPECIES)]
+        df = df.dropna(subset=['mic_ug_per_ml'])
+
+        self.species_dict = {name: i for i, name in enumerate(TARGET_SPECIES)}
+        self.groups_dict = {name: i for i, name in enumerate(TARGET_GROUPS)}
+        self.objects_dict = {name: i for i, name in enumerate(TARGET_OBJECTS)}
+
+        # MIC is log-normal across four orders of magnitude, so bin on the log.
+        df['MIC_log'] = np.log(df['mic_ug_per_ml'] + 1e-6)
+        df['MIC_category'], self.mic_bin_edges = pd.qcut(
+            df['MIC_log'], q=mic_bins, labels=False, retbins=True, duplicates='drop')
+        self.mic_bins = int(df['MIC_category'].max()) + 1
+
+        self.df = df.reset_index(drop=True)
+
+
+class AMPSafeDataset(Dataset):
+    """SAFE-encoded peptides conditioned on (species, target groups, MIC bin)."""
+
+    def __init__(self, data_path="molecular_dataset/dataset/data/", max_length=None, mic_bins=10):
+        # max_length=None keeps every molecule: the cutoff is set to the longest
+        
+        self.conditions = AMPSafeConditions(data_path, mic_bins=mic_bins)
+
+        tokenizer_path = os.path.join(data_path, "safe", "tokenizer.json")
+        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
+
+        # Read the special ids off the tokenizer rather than hardcoding them:
+        # this tokenizer.json disagrees with itself between `added_tokens` and
+        # `model.vocab` on which id is [PAD] / [MASK], and the tokenizer object
+        # is the side that actually governs encoding.
+        self.pad_token_id = self.tokenizer.pad_token_id
+        self.mask_token_id = self.tokenizer.mask_token_id
+        self.token_dict = self.tokenizer.get_vocab()
+        self.num_tokens = len(self.token_dict)
+
+        if self.pad_token_id is None or self.mask_token_id is None:
+            raise ValueError("Tokenizer is missing a [PAD] or [MASK] token.")
+
+        df = self.conditions.df
+
+        # Tokenize each distinct molecule once, then index per activity row.
+        unique = df[['amp_id', 'safe']].drop_duplicates('amp_id').reset_index(drop=True)
+        encoded = self.tokenizer(
+            unique['safe'].tolist(),
+            add_special_tokens=True,
+            padding=False,
+            truncation=False,
+            return_attention_mask=False)['input_ids']
+
+        lengths = np.array([len(ids) for ids in encoded])
+        self.max_length = int(lengths.max()) if max_length is None else int(max_length)
+
+        keep = lengths <= self.max_length
+        dropped = int((~keep).sum())
+        if dropped:
+            print(f"[AMPSafeDataset] dropped {dropped}/{len(keep)} molecules "
+                  f"longer than max_length={self.max_length} "
+                  f"(longest {int(lengths.max())} tokens)")
+
+        kept_ids = unique.loc[keep, 'amp_id'].to_numpy()
+        # Stored unpadded; the collate function pads each batch to its own max.
+        self.sequences = [np.asarray(encoded[idx], dtype=np.int64) for idx in np.flatnonzero(keep)]
+
+        self.row_of_amp_id = {amp_id: row for row, amp_id in enumerate(kept_ids)}
+        df = df[df['amp_id'].isin(self.row_of_amp_id)].reset_index(drop=True)
         self.df = df
 
-        self.target_species = ['escherichia coli', 'pseudomonas aeruginosa', 'klebsiella pneumoniae',
-                               'staphylococcus aureus', 'bacillus subtilis', 'staphylococcus epidermidis']        
-        self.target_objects = ['LIPID BILAYER', 'DNA / RNA', 'CYTOPLASMIC PROTEIN', 'MEMBRANE PROTEIN', 'OTHER']
-        self.target_groups  = ['GRAM-', 'GRAM+', 'MAMMALIAN CELL', 'FUNGUS', 'OTHER']        
+        self.sequence_index = df['amp_id'].map(self.row_of_amp_id).to_numpy()
+        self.conditions_array = self._build_conditions(df)
+        # Per-example token lengths, for length bucketing and for drawing
+        # realistic lengths at sampling time.
+        self.token_lengths = np.array([len(self.sequences[i]) for i in self.sequence_index])
 
-        self.species_dict = {species_name: i  for i, species_name in enumerate(self.target_species)}
-        self.groups_dict = {groups_name: i for i, groups_name in enumerate(self.target_groups)}
-        self.objects_dict = {objects_name: i for i, objects_name in enumerate(self.target_objects)}
-    
-        self.tokens, self.tokens_dict = self.load_tokens()
-        self.log_mean_mic, self.log_std_mic, self.mic_min, self.mic_max = self.bin_mic()
+    def _build_conditions(self, df):
+        out = np.zeros((len(df), CONDITION_DIM), dtype=np.float32)
+        group_offset = len(TARGET_SPECIES)
+        object_offset = group_offset + len(TARGET_GROUPS)
+        mic_offset = object_offset + len(TARGET_OBJECTS)
 
-    def load_tokens(self, special_tokens=['<blank>', '<MASK>']):
-        tokens = np.array(self.df['modified_sequence'].apply(identify_tokens))
-        tokens = set(np.concatenate(tokens))
+        for i, row in enumerate(df.itertuples(index=False)):
+            out[i, self.conditions.species_dict[row.species]] = 1.0
+            for group in row.targetGroups:
+                if group in self.conditions.groups_dict:
+                    out[i, group_offset + self.conditions.groups_dict[group]] = 1.0
+            for obj in row.targetObjects:
+                if obj in self.conditions.objects_dict:
+                    out[i, object_offset + self.conditions.objects_dict[obj]] = 1.0
+            out[i, mic_offset + int(row.MIC_category)] = 1.0
 
-        tokens -= set(special_tokens)
-
-        tokens = sorted(tokens)
-        tokens = [special_tokens[0]] + tokens + [special_tokens[1]] 
-
-        tokens_dict = {token: i for i, token in enumerate(tokens)}
-
-        if os.path.exists("data/dict.csv"):
-            with open("data/dict.csv") as csv_file:
-                reader = csv.reader(csv_file)
-                temp = {key: int(value) for key, value in reader}
-
-            if len(set(temp.keys()) & set(tokens)) == len(tokens):
-                tokens_dict = temp
-        else:
-            with open("data/dict.csv", "w", newline="") as csv_file:
-                writer = csv.writer(csv_file)
-                writer.writerows(tokens_dict.items())
-
-            print("Created new data/dict.csv")
-
-        return tokens, tokens_dict
-
-    def bin_mic(self):
-        categories, self.bin_edges = pd.qcut(self.df['MIC'], q=10, labels=False, retbins=True)
-        self.df['MIC_category'] = categories
-
-        # For Regressions
-        self.df['MIC_norm'] = np.log(self.df['MIC'] + 1e-6) 
-        log_mean_mic = self.df['MIC_norm'].mean()
-        log_std_mic = self.df['MIC_norm'].std()
-        self.df['MIC_norm'] = (self.df['MIC_norm'] - log_mean_mic) / log_std_mic
-    
-        mic_min = np.min(self.df['MIC_norm'])
-        mic_max = np.max(self.df['MIC_norm'])
-
-        return log_mean_mic, log_std_mic, mic_min, mic_max
-
-class AMPDatasets(Dataset):
-    def __init__(self, data_path = "data/", max_length = 64):
-
-        # nterminus and cterminus
-        self.max_length = max_length
-
-        # load datasets
-        self.dbaasp_df = pd.read_csv(os.path.join(data_path, "dbaasp.csv"), index_col=0)
-
-        self.dbaasp_df['targetGroups'] = self.dbaasp_df['targetGroups'].apply(ast.literal_eval)
-        self.dbaasp_df['targetObjects'] = self.dbaasp_df['targetObjects'].apply(ast.literal_eval)
-
-        self.conditions = AMPConditions(self.dbaasp_df)
-
-        # sequences one-hot encoding
-        self.sequences = []
-        self.condition = []
-
-        for row in self.conditions.df.values:
-            encoded_species = np.zeros(6)
-            encoded_groups  = np.zeros(5)   
-            encoded_objects = np.zeros(5)
-            encoded_mic     = np.zeros(10)   
-
-        
-            # create binary encoding for conditions (species, group, target and mic)
-            encoded_species[self.conditions.species_dict[row[0]]] = 1
-
-            for target_group in row[2]:
-                encoded_groups[self.conditions.groups_dict[target_group]] = 1
-
-            for target_object in row[3]:
-                encoded_objects[self.conditions.objects_dict[target_object]] = 1
-
-            encoded_mic[row[5]] = 1
-
-            self.sequences.append(one_hot_encode_sequence(row[1], self.conditions.tokens_dict, self.max_length))
-
-            #####
-            # AMPGAN is not using raw mic rather than one hot encoded MIC
-            #####
-            # self.condition.append(np.concatenate([encoded_species, encoded_groups, encoded_objects, [row[6]]]))
-            
-            self.condition.append(np.concatenate([encoded_species, encoded_groups, encoded_objects, encoded_mic]))
-
+        return out
 
     def __len__(self):
-        return len(self.dbaasp_df)
+        return len(self.sequence_index)
 
     def __getitem__(self, idx):
-        sample = self.sequences[idx]
-        condition = self.condition[idx]
-        label = 1 
         return {
-            "sequence": sample,
-            "condition": condition,
-            "label": label
+            "sequence": torch.from_numpy(self.sequences[self.sequence_index[idx]]),
+            "condition": torch.from_numpy(self.conditions_array[idx]),
         }
 
-class NonAMPDatasets(Dataset):
-    def __init__(self, data_path ="data/", max_length = 64, label = 0):
-        self.max_length = max_length
-        self.label_neg = label
+    # ---- decoding -------------------------------------------------------
 
-        self.non_amp_df = pd.read_csv(os.path.join(data_path, "non_amps.csv"), index_col=0)
-        self.non_amp_df['Sequence'] = self.non_amp_df['Sequence'].apply(lambda x:"<nblank><SOS>"+x+"<EOS><cblank>")
-        
-        conditions  = AMPConditions(pd.read_csv(os.path.join(data_path, "dbaasp.csv"), index_col=0))
+    def decode(self, ids):
+        """Token ids -> SAFE string, with [PAD]/[CLS]/[SEP] removed."""
+        if isinstance(ids, torch.Tensor):
+            ids = ids.detach().cpu().tolist()
+        return self.tokenizer.decode(list(ids), skip_special_tokens=True).replace(' ', '')
 
-        self.non_sequences = []
-        self.non_conditions = []
-        
+    def decode_to_smiles(self, ids):
+        """Token ids -> (safe_string, smiles or None).
 
-        for row in self.non_amp_df.values:
-            encoded_species = np.zeros(6)
-            encoded_groups  = np.zeros(5)   
-            encoded_objects = np.zeros(5)
-            encoded_mic     = np.zeros(10)
+        smiles is None when the generated token string is not a decodable SAFE
+        molecule -- unbalanced ring closures, a fragment cut off mid-attachment,
+        an unparseable atom block. This is the validity signal worth logging.
+        """
+        safe_str = self.decode(ids)
+        return safe_str, safe_to_smiles(safe_str)
 
-            # random species
-            np.random.seed(42)
-            encoded_species[np.random.randint(0,6)] = 1
 
-            # This is raw mic value
-            # mic_value = np.random.uniform(
-            # (np.log(150 + 1e-6) - conditions.log_mean_mic) / conditions.log_std_mic,
-            # (np.log(conditions.df['MIC'].max() + 1e-6) - conditions.log_mean_mic) / conditions.log_std_mic
-            # )
-            
-            # This is binarized mic value
-            encoded_mic[np.random.randint(len(encoded_mic))] = 1
+class SafeDecoder:
+    """Tokenizer-only decoder, for sampling without loading the whole dataset.
 
-            self.non_sequences.append(one_hot_encode_sequence(row[0], conditions.tokens_dict, self.max_length))
-            self.non_conditions.append(np.concatenate([encoded_species, 
-                                                       encoded_groups, 
-                                                       encoded_objects, 
-                                                       encoded_mic]))
+    Everything the sampler needs to turn model output back into chemistry:
+    ids -> SAFE string -> SMILES, plus a validity score for candidate ranking.
+    """
 
-    def __len__(self):
-        return len(self.non_sequences)
+    def __init__(self, tokenizer_path):
+        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
+        self.pad_token_id = self.tokenizer.pad_token_id
+        self.mask_token_id = self.tokenizer.mask_token_id
+        self.token_dict = self.tokenizer.get_vocab()
 
-    def __getitem__(self, idx):
-        sample = self.non_sequences[idx]
-        condition = self.non_conditions[idx]
-        label = self.label_neg
-        return {
-            "sequence": sample,
-            "condition": condition,
-            "label": label
-        }
+    def decode(self, ids):
+        if isinstance(ids, torch.Tensor):
+            ids = ids.detach().cpu().tolist()
+        return self.tokenizer.decode(list(ids), skip_special_tokens=True).replace(' ', '')
 
-class BatchSampler(Sampler):
-    def __init__(self, pos_indices, neg_indices, batch_size, pos_ratio=0.5):
-        self.pos_indices = pos_indices
-        self.neg_indices = neg_indices
-        self.batch_size = batch_size
-        self.pos_ratio = pos_ratio 
-        self.pos_batch_size = int(batch_size * pos_ratio)
-        self.neg_batch_size = batch_size - self.pos_batch_size
+    def smiles_from_safe(self, safe_str):
+        return safe_to_smiles(safe_str)
 
-    def __iter__(self):
-        pos_samples = random.sample(self.pos_indices, len(self.pos_indices))
-        neg_samples = random.sample(self.neg_indices, len(self.neg_indices))
-        
-        neg_len = len(neg_samples)
-        neg_ptr = 0
+    def score(self, safe_str):
+        """(is_valid, score) for ranking k_samples candidates in generate_sample.
 
-        for pos_ptr in range(0, len(pos_samples), self.pos_batch_size):
-            pos_batch = pos_samples[pos_ptr:pos_ptr + self.pos_batch_size]
+        Score is heavy-atom count, so among decodable candidates the larger
+        molecule wins rather than a trivial one-fragment answer.
+        """
+        smiles = safe_to_smiles(safe_str)
+        if smiles is None:
+            return False, 0.0
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return False, 0.0
+        return True, float(mol.GetNumHeavyAtoms())
 
-            if len(pos_batch) < self.pos_batch_size:
-                break  
+    def length_pool(self, safe_csv_path):
+        """Token lengths of the real corpus, to draw generation lengths from."""
+        df = pd.read_csv(safe_csv_path).dropna(subset=['safe'])
+        encoded = self.tokenizer(df['safe'].tolist(), add_special_tokens=True,
+                                 padding=False, truncation=False,
+                                 return_attention_mask=False)['input_ids']
+        return np.array([len(ids) for ids in encoded])
 
-            if neg_ptr + self.neg_batch_size > neg_len:
-                neg_samples = random.sample(self.neg_indices, len(self.neg_indices))
-                neg_ptr = 0
-            neg_batch = neg_samples[neg_ptr:neg_ptr + self.neg_batch_size]
-            neg_ptr += self.neg_batch_size
 
-            batch = pos_batch + neg_batch
-            random.shuffle(batch)
-            yield batch
+def safe_to_smiles(safe_str):
+    """Decode a SAFE string to canonical SMILES, or None if it is not valid."""
+    if not safe_str:
+        return None
+    try:
+        smiles = sf.decode(safe_str, canonical=True, ignore_errors=False)
+    except Exception:
+        return None
+    if not smiles:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    return Chem.MolToSmiles(mol) if mol is not None else None
 
-    def __len__(self):
-        return len(self.pos_indices) // self.pos_batch_size
-    
-class AMPDatasetModule(L.LightningDataModule):
-    def __init__(self, file_path="data/", max_length=64, batch_size=128, pos_ratio=0.5):
+
+def collate_pad(batch, pad_token_id, multiple_of=32):
+    """Pad a batch to its own longest member, rounded up to `multiple_of`.
+
+    Rounding keeps the number of distinct sequence lengths small, which matters
+    because the DiT's rotary embedding caches per length (models/DiTwithCondition.py).
+    """
+    lengths = [item['sequence'].shape[0] for item in batch]
+    width = max(lengths)
+    if multiple_of > 1:
+        width = -(-width // multiple_of) * multiple_of
+
+    sequences = torch.full((len(batch), width), pad_token_id, dtype=torch.long)
+    for i, item in enumerate(batch):
+        sequences[i, :lengths[i]] = item['sequence']
+
+    return {
+        "sequence": sequences,
+        "condition": torch.stack([item['condition'] for item in batch]),
+    }
+
+
+class AMPSafeDataModule(L.LightningDataModule):
+    def __init__(self, file_path="molecular_dataset/dataset/data/", max_length=None,
+                 batch_size=16, mic_bins=10, num_workers=4):
         super().__init__()
         self.file_path = file_path
         self.max_length = max_length
         self.batch_size = batch_size
-        self.pos_ratio = pos_ratio
+        self.mic_bins = mic_bins
+        self.num_workers = num_workers
+        self.full_dataset = None
 
     def setup(self, stage=None):
-        self.amp_dataset = AMPDatasets(data_path=self.file_path, max_length=self.max_length)
-        self.non_amp_dataset = NonAMPDatasets(data_path=self.file_path, max_length=self.max_length)
-        self.full_dataset = ConcatDataset([self.amp_dataset, self.non_amp_dataset])
-        self.token_dict = self.amp_dataset.conditions.tokens_dict
-        self.pos_indices = list(range(len(self.amp_dataset)))
-        self.neg_indices = [i + len(self.amp_dataset) for i in range(len(self.non_amp_dataset))]
+        if self.full_dataset is not None:
+            return
+        self.full_dataset = AMPSafeDataset(
+            data_path=self.file_path, max_length=self.max_length, mic_bins=self.mic_bins)
 
-        self.sampler = BatchSampler(
-            self.pos_indices,
-            self.neg_indices,
-            batch_size=self.batch_size,
-            pos_ratio=self.pos_ratio
-        )
+        # Surfaced for trainer.py and for DiscreteFlowMatching's decoding.
+        self.token_dict = self.full_dataset.token_dict
+        self.num_tokens = self.full_dataset.num_tokens
+        self.mask_token_id = self.full_dataset.mask_token_id
+        self.pad_token_id = self.full_dataset.pad_token_id
+        self.max_length = self.full_dataset.max_length
+        # Empirical token-length distribution, used to draw sampling lengths.
+        self.length_pool = self.full_dataset.token_lengths
 
-    def train_dataloader(self):
-        return DataLoader(
-            self.full_dataset,
-            batch_sampler=self.sampler,
-            num_workers=4, 
-            pin_memory=True
-        )
+    def decode(self, ids):
+        return self.full_dataset.decode(ids)
 
-class SwissProtDataset(Dataset):
-    def __init__(self, data_path = "data/", max_length=66):
-        self.df = pd.read_csv(os.path.join(data_path, "swissprot.csv"))
-        self.df['raw_sequence'] = self.df['sequence'].apply(lambda x: x.split(">")[1].split("<")[0])
-        self.sequence_list = self.df['sequence']
-        
-        self.max_length = max_length
+    def decode_to_smiles(self, ids):
+        return self.full_dataset.decode_to_smiles(ids)
 
-        self.tokens, self.tokens_dict = self.load_tokens()
-        self.sequences = []
-
-
-        for sequence in self.sequence_list:
-            self.sequences.append(one_hot_encode_sequence(sequence, self.tokens_dict, max_length))
-
-
-    def load_tokens(self, special_tokens=['<blank>', '<MASK>']):
-        tokens = np.array(self.df['sequence'].apply(identify_tokens))
-        tokens = set(np.concatenate(tokens))
-
-        tokens -= set(special_tokens)
-
-        tokens = sorted(tokens)
-        tokens = [special_tokens[0]] + tokens + [special_tokens[1]] 
-
-        tokens_dict = {token: i for i, token in enumerate(tokens)}
-
-        if os.path.exists("data/tokens_swissprot.csv"):
-            with open("data/tokens_swissprot.csv") as csv_file:
-                reader = csv.reader(csv_file)
-                temp = {key: int(value) for key, value in reader}
-
-            if len(set(temp.keys()) & set(tokens)) == len(tokens):
-                tokens_dict = temp
-        else:
-            with open("data/tokens_swissprot.csv", "w", newline="") as csv_file:
-                writer = csv.writer(csv_file)
-                writer.writerows(tokens_dict.items())
-
-            print("Created new data/tokens_swissprot.csv")
-
-        return tokens, tokens_dict
-
-    def __len__(self):
-        return len(self.sequences)
-
-    def __getitem__(self, idx):
-        seq = self.sequences[idx]
-
-
-        return {
-            "sequence": seq,
-
-        }
-
-class SwissProtModule(L.LightningDataModule):
-    def __init__(self, data_path="data/", max_length=66, batch_size=128):
-        super().__init__()
-        self.data_path = data_path
-        self.max_length = max_length
-        self.batch_size = batch_size
-        self.categorical_bin = categorical_bin
-        
-        
-    def setup(self, stage=None):
-        self.full_dataset = SwissProtDataset(data_path=self.data_path, 
-                                             max_length=self.max_length)
+    def smiles_from_safe(self, safe_str):
+        return safe_to_smiles(safe_str)
 
     def train_dataloader(self):
         return DataLoader(
             self.full_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=4,
-            pin_memory=True
-        )
-    def predict_dataloader(self):
-        return DataLoader(
-            self.full_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True
+            num_workers=self.num_workers,
+            pin_memory=True,
+            collate_fn=lambda batch: collate_pad(batch, self.pad_token_id),
         )

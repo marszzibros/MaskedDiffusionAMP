@@ -1,0 +1,48 @@
+[project]
+name = "masked-diffusion-amp"
+version = "0.1.0"
+description = "Conditional discrete flow matching for antimicrobial peptide design."
+requires-python = ">=3.12"
+
+dependencies = [
+    # --- training ---
+    "torch>=2.6",
+    "lightning>=2.4",
+    "einops>=0.8",
+    "huggingface-hub>=0.26",
+    "wandb>=0.18",
+    "biopython>=1.84",
+    "tqdm>=4.66",
+    # --- dataset pipeline (mirrors molecular_dataset/pyproject.toml) ---
+    "requests>=2.34",
+    "numpy>=2.5",
+    "pandas>=3.0",
+    "rdkit>=2026.3.4",
+    "datamol>=0.12.5",
+    "safe-mol>=0.1.14",
+    "tokenizers>=0.22",
+    # safe-mol 0.1.x imports symbols that transformers 5.x removed, so it must be
+    # kept on the 4.x line (safe-mol itself declares no upper bound). The training
+    # code only uses get_{linear,cosine}_schedule_with_warmup, stable across 4.x.
+    "transformers>=4.42,<5",
+]
+
+# flash-attn is installed from a prebuilt wheel matching this exact stack
+# (cu126 / torch 2.13 / cp312) rather than resolved here -- see README.
+[project.optional-dependencies]
+flash = ["flash-attn>=2.7"]
+
+# This repo is a collection of scripts, not an installable package.
+[tool.uv]
+package = false
+no-build-isolation-package = ["flash-attn"]
+
+# Driver here is 560.35 (RTX 4080), which supports CUDA 12.6 but not 12.8
+# (cu128 wheels need driver >= 570). Pin the cu126 wheel index accordingly.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }

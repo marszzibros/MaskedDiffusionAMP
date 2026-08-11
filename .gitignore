@@ -7,3 +7,7 @@
 *.pyc
 *.txt
 *.png
+
+# separate git repository, cloned in place
+/molecular_dataset
+/.venv

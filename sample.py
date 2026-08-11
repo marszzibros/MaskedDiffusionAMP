@@ -2,28 +2,10 @@ import argparse
 import torch
 import os
 import math
+import numpy as np
 from tqdm import tqdm
 from DFM import DiscreteFlowMatching
-
-def load_vocab(vocab_path):
-    if not os.path.exists(vocab_path):
-        raise FileNotFoundError(f"Vocabulary file not found at {vocab_path}. You need the token_dict to decode outputs.")
-    
-    token_dict = {}
-    with open(vocab_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            # Split by comma: "<blank>,0" -> ["<blank>", "0"]
-            try:
-                token, idx = line.strip().split(',')
-                token_dict[token] = int(idx)
-            except ValueError:
-                print(f"Skipping malformed line in vocab: {line}")
-                continue
-    
-    return token_dict
+from dataset import SafeDecoder
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,8 +21,17 @@ def main(args):
     current_eta = args.eta if args.eta is not None else model.eta
     print(f"Sampling with stochasticity (eta): {current_eta}")
 
-    token_dict = load_vocab(args.vocab_path)
+    decoder = SafeDecoder(args.tokenizer_path)
+    token_dict = decoder.token_dict
     print(f"Loaded vocabulary size: {len(token_dict)}")
+
+    length_pool = None
+    if args.safe_csv:
+        length_pool = decoder.length_pool(args.safe_csv)
+        print(f"Length pool: {len(length_pool)} molecules, median {int(np.median(length_pool))} tokens")
+    else:
+        print("No --safe_csv given: falling back to uniform lengths, which will "
+              "produce truncated fragments for SAFE. Pass amp_safe.csv.")
 
     total_samples = args.num_samples
     batch_size = args.batch_size
@@ -53,6 +44,7 @@ def main(args):
     scales = {'species': 1.0, 'groups': 1.0, 'mic': 1.0}
     
     import random
+    n_valid = n_total = 0
     with open(args.output_file, "w") as f_out:
         with torch.no_grad():
             for i in tqdm(range(num_batches), desc="Sampling"):
@@ -86,21 +78,35 @@ def main(args):
                     eta=current_eta,
                     temperature=args.temperature,
                     k_samples=args.k_samples,
-                    use_charge_filter=args.use_charge_filter
+                    use_charge_filter=args.use_charge_filter,
+                    length_pool=length_pool,
+                    decode_fn=decoder.decode,
+                    score_fn=decoder.score if args.k_samples > 1 else None,
                 )
 
-                # Write to file
+                # A SAFE string that does not decode is not a molecule; record
+                # the SMILES so downstream tools get something usable.
                 for seq in sequences:
-                    f_out.write(seq + "\n")
+                    smiles = decoder.smiles_from_safe(seq)
+                    n_valid += smiles is not None
+                    n_total += 1
+                    f_out.write(f"{seq}\t{smiles if smiles else 'INVALID'}\n")
 
+    pct = 100 * n_valid / max(n_total, 1)
     print(f"Done! {total_samples} samples saved to: {args.output_file}")
+    print(f"Valid molecules: {n_valid}/{n_total} ({pct:.1f}%)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate protein samples from trained DFM model.")
     
     # Required arguments
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the .ckpt file")
-    parser.add_argument("--vocab_path", type=str, required=True, help="Path to the vocab csv file (e.g. ./data/vocab.csv)")
+    parser.add_argument("--tokenizer_path", type=str,
+                        default="molecular_dataset/dataset/data/safe/tokenizer.json",
+                        help="Path to the trained SAFE tokenizer.json")
+    parser.add_argument("--safe_csv", type=str,
+                        default="molecular_dataset/dataset/data/safe/amp_safe.csv",
+                        help="Corpus used to draw realistic generation lengths; pass '' to disable")
     parser.add_argument("--num_samples", type=int, required=True, help="Total number of samples to generate")
     
     # Optional arguments
