@@ -1,13 +1,12 @@
 /data
 /logs
-/__pycache__
 /results
 /output
 *.out
 *.pyc
-*.txt
+__pycache__/
 *.png
-
+*/__pycache__/
 # separate git repository, cloned in place
 /molecular_dataset
 /.venv
