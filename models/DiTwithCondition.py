@@ -394,11 +394,11 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     
     
     # Concatenation Projection for Condition Embedding
-    # self.cond_proj = nn.Sequential(
-    #   nn.Linear(cond_dim * 2, cond_dim), # *2 because of concat
-    #   nn.SiLU(),
-    #   nn.Linear(cond_dim, cond_dim)
-    #   )
+    self.cond_proj = nn.Sequential(
+      nn.Linear(cond_dim * 2, cond_dim), # *2 because of concat
+      nn.SiLU(),
+      nn.Linear(cond_dim, cond_dim)
+      )
 
   def _get_bias_dropout_scale(self):
     if self.training:
@@ -435,11 +435,11 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         cond_accum = cond_accum + cond_embedding
 
     # 3. Combine
-    c = F.silu(t_emb + cond_accum)
+    # c = F.silu(t_emb + cond_accum)
     
     # Instead of c = t_emb + cond_accum
-    # c = torch.cat([t_emb, cond_accum], dim=-1)
-    # c = self.cond_proj(c)
+    c = torch.cat([t_emb, cond_accum], dim=-1)
+    c = self.cond_proj(c)
 
     rotary_cos_sin = self.rotary_emb(x)
 
