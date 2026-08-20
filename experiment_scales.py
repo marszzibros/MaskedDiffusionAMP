@@ -26,7 +26,7 @@ def load_vocab(vocab_path):
     
     return token_dict
 
-VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWYacdefghiklmnpqrstvwy")
+VALID_AMINO_ACIDS = set("ACDEFGHIKLMNPQRSTVWYacfhiklnpqrstvwy")
 
 def extract_sequence(seq):
     match = re.search(r'<SOS>(.*?)<EOS>', seq)
