@@ -64,28 +64,11 @@ stable across the 4.x line, so this costs nothing on the training side.
 
 ## Data
 
-The dataset lives in the nested [`molecular_dataset/`](molecular_dataset/) repo,
-which stores its CSVs in **Git LFS**. A plain `git clone` leaves ~130-byte
-pointer stubs in place of the real files, so fetch them explicitly:
-
 ```bash
 cd molecular_dataset
 git lfs install
 git lfs pull                                  # ~232 MB total
 git lfs pull --include="dataset/data/**"      # ~56 MB, peptide pipeline only
-```
-
-The pipeline itself (DBAASP download → peptide/activity tables → SAFE encoding →
-tokenizer) is documented in
-[`molecular_dataset/README.md`](molecular_dataset/README.md). Its scripts run
-under this same environment, so `uv run python molecular_dataset/dataset/build_amp_dataset.py`
-works from the repo root — no second venv needed.
-
-`molecular_dataset/` is a separate git repository and is git-ignored here. To
-track it against a fixed revision instead, replace the clone with a submodule:
-
-```bash
-git submodule add git@github.com:marszzibros/molecular_dataset.git
 ```
 
 ---
@@ -147,4 +130,3 @@ uv run python sample.py \
     --checkpoint_path output/<timestamp>/model-epoch_800.ckpt \
     --num_samples 256
 ```
-

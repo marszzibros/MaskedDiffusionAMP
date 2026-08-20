@@ -21,7 +21,7 @@ class DiscreteFlowMatching(L.LightningModule):
                  scheduler_name="linear",
                  num_tokens=49,
                  accumulate_grad_batches=4,
-                 max_length=68,
+                 max_length=None,
                  mask_token_id=None, 
                  pad_token_id=None, 
                  eta=0.0,
@@ -39,6 +39,10 @@ class DiscreteFlowMatching(L.LightningModule):
         
         if mask_token_id is None:
             raise ValueError("You must provide the mask_token_id (integer) from your vocabulary.")
+
+        if max_length is None:
+            raise ValueError("You must provide max_length; take it from the datamodule "
+                             "after setup() rather than hardcoding it.")
             
         self.mask_token_id = mask_token_id
         self.pad_token_id = pad_token_id 
@@ -166,6 +170,11 @@ class DiscreteFlowMatching(L.LightningModule):
         return loss
     
     def on_train_epoch_end(self):
+        # num_samples=0 disables per-epoch generation. Used during pretraining,
+        # where sampling costs 4 forward passes per step and the validity signal
+        # is about AMP chemistry, not generic peptides.
+        if self.hparams.num_samples <= 0:
+            return
         if self.global_rank == 0:
             if hasattr(self.trainer.datamodule, 'token_dict'):
                 tokens_dict = self.trainer.datamodule.token_dict
@@ -235,16 +244,21 @@ class DiscreteFlowMatching(L.LightningModule):
         return out_vec
 
     @torch.no_grad()
-    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=68, eta=None, temperature=1.0, k_samples=1, use_charge_filter=False, shortest_length=14, longest_length=36, length_pool=None, decode_fn=None, score_fn=None):
+    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=None, eta=None, temperature=1.0, k_samples=1, use_charge_filter=False, shortest_length=14, longest_length=36, length_pool=None, decode_fn=None, score_fn=None):
         """
+        max_length:  defaults to the trained max_length from hparams. Never
+                     hardcode it -- a too-small value silently yields stubs.
         length_pool: array of real token lengths to draw generation lengths from.
-                     Falls back to uniform [shortest_length, longest_length).
+                     Falls back to uniform [shortest_length, longest_length),
+                     which is a peptide-residue range and wrong for SAFE.
         decode_fn:   ids -> string. Defaults to joining raw vocab tokens.
         score_fn:    string -> (is_valid, score), used to rank the k_samples
                      candidates. Defaults to the peptide net-charge filter.
         """
         if eta is None:
             eta = self.eta
+        if max_length is None:
+            max_length = self.hparams.max_length
 
         self.ema.store(self.model.parameters())
         self.ema.copy_to(self.model.parameters())

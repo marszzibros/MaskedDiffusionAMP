@@ -8,11 +8,23 @@ from DFM import DiscreteFlowMatching
 from dataset import SafeDecoder
 
 def main(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # is_available() can be True while the job holds no device (e.g. launched
+    # outside SLURM, or an unsatisfied --gres). Touch the device before trusting
+    # it, otherwise the failure surfaces deep inside torch.load's unpickler.
+    device = torch.device("cpu")
+    if torch.cuda.is_available():
+        try:
+            torch.zeros(1, device="cuda")
+            device = torch.device("cuda")
+        except RuntimeError as e:
+            print(f"CUDA reported available but unusable ({e}); falling back to CPU. "
+                  f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}")
     print(f"Using device: {device}")
 
     print(f"Loading model from: {args.checkpoint_path}")
-    model = DiscreteFlowMatching.load_from_checkpoint(args.checkpoint_path)
+    # Checkpoint tensors were saved from GPU; without map_location torch.load
+    # tries to restore them straight to CUDA regardless of `device`.
+    model = DiscreteFlowMatching.load_from_checkpoint(args.checkpoint_path, map_location=device)
     model.to(device)
     if hasattr(model, 'ema') and model.ema is not None:
         model.ema.move_shadow_params_to_device(device)
@@ -41,7 +53,14 @@ def main(args):
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     
-    scales = {'species': 1.0, 'groups': 1.0, 'mic': 1.0}
+    # A model pretrained at cond_dropout=1.0 never trains VectorEmbedder.linear
+    # (torch.where always selects null_embedding), so guiding on a real condition
+    # routes through random weights. Scales of 0 collapse the CFG sum to
+    # logits_uncond, which is the path that actually trained.
+    s = 0.0 if args.uncond else 1.0
+    scales = {'species': s, 'groups': s, 'mic': s}
+    if args.uncond:
+        print("Unconditional sampling: all guidance scales 0 (use for pretrained checkpoints)")
     
     import random
     n_valid = n_total = 0
@@ -120,6 +139,9 @@ if __name__ == "__main__":
     parser.add_argument("--species", type=int, nargs="+", default=[0], help="List of species indices")
     parser.add_argument("--groups", type=int, nargs="+", default=[0], help="List of groups indices")
     parser.add_argument("--mic", type=int, default=2, help="Base MIC value")
+    parser.add_argument("--uncond", action="store_true",
+                        help="Set all CFG scales to 0. Required for checkpoints pretrained "
+                             "with cond_dropout=1.0, whose conditional projections are untrained.")
 
     args = parser.parse_args()
     main(args)

@@ -52,23 +52,24 @@ def main():
     
     model_config = {
         "model_name": "DiT",
-        "batch_size": 8,
-        "num_epochs": 1601,
-        "warmup_ratio": 0.05,
+        "batch_size": 16,
+        "num_epochs": 501,
+        "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
         "num_samples": 5,
         "num_steps": 100,
         "learning_rate": 1e-4,
         "scheduler_name": "cosine",
-        "accumulate_grad_batches": 8,
+        "accumulate_grad_batches": 8,   # effective batch 128
         "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
         "eta": 5,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         "cond_dropout": 0.1,
-        # hidden_size: 1024/12 is not an integer, so 16 heads (head_dim 64).
-        # The 1536/24 config is 738M params / ~34 GB peak -- H200 only.
-        "hidden_size": 1024,
+        # 492M params, ~86 GB peak at batch 16 -- H200 (141 GB) only; this does
+        # not fit a 16 GB card. n_heads must divide hidden_size: 1536/12 = 128,
+        # which is one of flash-attn's tuned head dimensions (96 is not).
+        "hidden_size": 1536,
         "n_blocks": 16,
-        "n_heads": 16,
+        "n_heads": 12,
     }
 
     dataset = AMPSafeDataModule(
@@ -114,7 +115,9 @@ def main():
     
 
 
-    force_saver = ForceSaveCallback(dirpath=output_dir, every_n_epochs=800)
+    # Must be < num_epochs, or the callback never fires and the run produces no
+    # checkpoints at all.
+    force_saver = ForceSaveCallback(dirpath=output_dir, every_n_epochs=25)
     
     wandb_logger = WandbLogger(
         project="AMP_Mask_Diffusion",

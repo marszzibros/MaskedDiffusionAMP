@@ -8,5 +8,6 @@ __pycache__/
 *.png
 */__pycache__/
 # separate git repository, cloned in place
-/molecular_dataset
 /.venv
+out.csv
+*.gz
