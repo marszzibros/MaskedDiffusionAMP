@@ -46,3 +46,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu126" }
+
+[tool.uv.workspace]
+members = [
+    "venv",
+]
