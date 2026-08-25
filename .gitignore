@@ -11,3 +11,5 @@ __pycache__/
 /.venv
 out.csv
 *.gz
+.train_canonical.csv
+per_sample*.csv
