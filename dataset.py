@@ -5,9 +5,8 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 import lightning as L
-
 import safe as sf
-from safe import SAFETokenizer
+from custom_tokenizer import OrthogonalSafeTokenizer
 from rdkit import Chem, RDLogger
 
 # SAFE decoding of a half-trained model produces a lot of invalid fragments;
@@ -26,6 +25,12 @@ TARGET_GROUPS = ['GRAM-', 'GRAM+', 'MAMMALIAN CELL', 'FUNGUS', 'OTHER']
 TARGET_OBJECTS = ['LIPID BILAYER', 'DNA / RNA', 'CYTOPLASMIC PROTEIN', 'MEMBRANE PROTEIN', 'OTHER']
 
 CONDITION_DIM = len(TARGET_SPECIES) + len(TARGET_GROUPS) + len(TARGET_OBJECTS) + 10
+TOKENIZER_PATH = "tokenizer_vocab.csv"
+
+
+def encode_safe_strings(tokenizer, safe_strings):
+    return [tokenizer.encode(safe_string, add_special_tokens=True)
+            for safe_string in safe_strings]
 
 
 def parse_list(value):
@@ -82,16 +87,12 @@ class AMPSafeDataset(Dataset):
         
         self.conditions = AMPSafeConditions(data_path, mic_bins=mic_bins)
 
-        tokenizer_path = os.path.join(data_path, "safe", "tokenizer.json")
-        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
+        self.tokenizer = OrthogonalSafeTokenizer.load_csv(TOKENIZER_PATH)
 
-        # Read the special ids off the tokenizer rather than hardcoding them:
-        # this tokenizer.json disagrees with itself between `added_tokens` and
-        # `model.vocab` on which id is [PAD] / [MASK], and the tokenizer object
-        # is the side that actually governs encoding.
-        self.pad_token_id = self.tokenizer.pad_token_id
-        self.mask_token_id = self.tokenizer.mask_token_id
-        self.token_dict = self.tokenizer.get_vocab()
+        # Read special ids from the loaded vocabulary rather than hardcoding them.
+        self.pad_token_id = self.tokenizer.token2id.get("[PAD]")
+        self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
+        self.token_dict = self.tokenizer.token2id
         self.num_tokens = len(self.token_dict)
 
         if self.pad_token_id is None or self.mask_token_id is None:
@@ -101,12 +102,7 @@ class AMPSafeDataset(Dataset):
 
         # Tokenize each distinct molecule once, then index per activity row.
         unique = df[['amp_id', 'safe']].drop_duplicates('amp_id').reset_index(drop=True)
-        encoded = self.tokenizer(
-            unique['safe'].tolist(),
-            add_special_tokens=True,
-            padding=False,
-            truncation=False,
-            return_attention_mask=False)['input_ids']
+        encoded = encode_safe_strings(self.tokenizer, unique['safe'].tolist())
 
         lengths = np.array([len(ids) for ids in encoded])
         self.max_length = int(lengths.max()) if max_length is None else int(max_length)
@@ -185,11 +181,11 @@ class SafeDecoder:
     ids -> SAFE string -> SMILES, plus a validity score for candidate ranking.
     """
 
-    def __init__(self, tokenizer_path):
-        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
-        self.pad_token_id = self.tokenizer.pad_token_id
-        self.mask_token_id = self.tokenizer.mask_token_id
-        self.token_dict = self.tokenizer.get_vocab()
+    def __init__(self, tokenizer_path=TOKENIZER_PATH):
+        self.tokenizer = OrthogonalSafeTokenizer.load_csv(tokenizer_path)
+        self.pad_token_id = self.tokenizer.token2id.get("[PAD]")
+        self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
+        self.token_dict = self.tokenizer.token2id
 
     def decode(self, ids):
         if isinstance(ids, torch.Tensor):
@@ -216,9 +212,7 @@ class SafeDecoder:
     def length_pool(self, safe_csv_path):
         """Token lengths of the real corpus, to draw generation lengths from."""
         df = pd.read_csv(safe_csv_path).dropna(subset=['safe'])
-        encoded = self.tokenizer(df['safe'].tolist(), add_special_tokens=True,
-                                 padding=False, truncation=False,
-                                 return_attention_mask=False)['input_ids']
+        encoded = encode_safe_strings(self.tokenizer, df['safe'].tolist())
         return np.array([len(ids) for ids in encoded])
 
 
@@ -312,12 +306,12 @@ class UniProtSafeDataset(Dataset):
     Build the CSV with build_uniprot_corpus.py
     """
 
-    def __init__(self, csv_path, tokenizer_path="molecular_dataset/dataset/data/safe/tokenizer.json",
+    def __init__(self, csv_path, tokenizer_path=TOKENIZER_PATH,
                  max_length=None, limit=None):
-        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
-        self.pad_token_id = self.tokenizer.pad_token_id
-        self.mask_token_id = self.tokenizer.mask_token_id
-        self.token_dict = self.tokenizer.get_vocab()
+        self.tokenizer = OrthogonalSafeTokenizer.load_csv(tokenizer_path)
+        self.pad_token_id = self.tokenizer.token2id.get("[PAD]")
+        self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
+        self.token_dict = self.tokenizer.token2id
         self.num_tokens = len(self.token_dict)
         if self.pad_token_id is None or self.mask_token_id is None:
             raise ValueError("Tokenizer is missing a [PAD] or [MASK] token.")
@@ -331,9 +325,7 @@ class UniProtSafeDataset(Dataset):
         if limit:
             df = df.head(limit)
 
-        encoded = self.tokenizer(
-            df['safe'].tolist(), add_special_tokens=True, padding=False,
-            truncation=False, return_attention_mask=False)['input_ids']
+        encoded = encode_safe_strings(self.tokenizer, df['safe'].tolist())
 
         lengths = np.array([len(ids) for ids in encoded])
         # max_length need not match the AMP run: DDitFinalLayer stores seq_length
@@ -376,7 +368,7 @@ class UniProtSafeDataset(Dataset):
 class UniProtSafeDataModule(L.LightningDataModule):
     """Drop-in replacement for AMPSafeDataModule during pretraining."""
 
-    def __init__(self, csv_path, tokenizer_path="molecular_dataset/dataset/data/safe/tokenizer.json",
+    def __init__(self, csv_path, tokenizer_path=TOKENIZER_PATH,
                  max_length=None, batch_size=16, num_workers=4, limit=None):
         super().__init__()
         self.csv_path = csv_path

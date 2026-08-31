@@ -97,7 +97,6 @@ def main(args):
                     eta=current_eta,
                     temperature=args.temperature,
                     k_samples=args.k_samples,
-                    use_charge_filter=args.use_charge_filter,
                     length_pool=length_pool,
                     decode_fn=decoder.decode,
                     score_fn=decoder.score if args.k_samples > 1 else None,
@@ -121,8 +120,8 @@ if __name__ == "__main__":
     # Required arguments
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the .ckpt file")
     parser.add_argument("--tokenizer_path", type=str,
-                        default="molecular_dataset/dataset/data/safe/tokenizer.json",
-                        help="Path to the trained SAFE tokenizer.json")
+                        default="tokenizer_vocab.csv",
+                        help="Path to the tokenizer vocabulary CSV")
     parser.add_argument("--safe_csv", type=str,
                         default="molecular_dataset/dataset/data/safe/amp_safe.csv",
                         help="Corpus used to draw realistic generation lengths; pass '' to disable")
@@ -135,7 +134,6 @@ if __name__ == "__main__":
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
     parser.add_argument("--steps", type=int, default=100, help="Number of steps for generation")
     parser.add_argument("--k_samples", type=int, default=1, help="Number of candidate samples to generate per token step when filtering by charge")
-    parser.add_argument("--use_charge_filter", action="store_true", help="Turn on the Biopython net charge filter (requires k_samples > 1 for diversity selection)")
     parser.add_argument("--species", type=int, nargs="+", default=[0], help="List of species indices")
     parser.add_argument("--groups", type=int, nargs="+", default=[0], help="List of groups indices")
     parser.add_argument("--mic", type=int, default=2, help="Base MIC value")
