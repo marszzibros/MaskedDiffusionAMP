@@ -51,7 +51,8 @@ class AMPSafeConditions:
 
         amp = pd.read_csv(os.path.join(dbaasp_dir, "amp.csv"))
         activity = pd.read_csv(os.path.join(dbaasp_dir, "amp_activity.csv"))
-        safe = pd.read_csv(os.path.join(safe_dir, "amp_safe.csv"))
+        # safe = pd.read_csv(os.path.join(safe_dir, "amp_safe.csv"))
+        safe = pd.read_csv(os.path.join(safe_dir, "modified_amp_safe.csv"))
 
         amp['targetGroups'] = amp['targetGroups'].apply(parse_list)
         amp['targetObjects'] = amp['targetObjects'].apply(parse_list)

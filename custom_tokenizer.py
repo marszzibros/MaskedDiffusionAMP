@@ -81,9 +81,9 @@ class OrthogonalSafeTokenizer:
         for t in tokens:
             if not t:
                 continue
-            if re.fullmatch(r'c+', t):
-                res.extend(list(t))
-                continue
+            # if re.fullmatch(r'c+', t):
+            #     res.extend(list(t))
+            #     continue
 
             # Check if N appears after more than 5 Cs (e.g., CCCCCCN, CCCCCCC...N)
             m_cn = re.match(r'^(C{6,})(N.*)$', t)
