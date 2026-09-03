@@ -195,7 +195,7 @@ class DiscreteFlowMatching(L.LightningModule):
         if self.global_rank == 0:
             if hasattr(self.trainer.datamodule, 'token_dict'):
                 tokens_dict = self.trainer.datamodule.token_dict
-            else:mask_drop
+            else:
                 print("Warning: 'token_dict' not found in DataModule. Skipping generation.")
                 return
 
@@ -328,7 +328,7 @@ class DiscreteFlowMatching(L.LightningModule):
             
             index_to_token = {i: token for token, i in tokens_dict.items()}
             
-            for _ in range(steps):mask_drop
+            for _ in range(steps):
                 t_tensor = torch.full((num_samples,), t, device=device)
                 
                 # --- 4-PASS COMPOSITIONAL GUIDANCE ---
