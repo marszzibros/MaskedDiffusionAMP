@@ -56,12 +56,12 @@ def main():
         "num_epochs": 501,
         "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
         "num_samples": 5,
-        "num_steps": 100,
+        "num_steps": 1000,
         "learning_rate": 1e-4,
         "scheduler_name": "cosine",
         "accumulate_grad_batches": 8,   # effective batch 128
         "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
-        "eta": 5,
+        "eta": 500,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         "cond_dropout": 0.1,
         # 492M params, ~86 GB peak at batch 16 -- H200 (141 GB) only; this does

@@ -109,9 +109,27 @@ class DiscreteFlowMatching(L.LightningModule):
         drop_mic     = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
 
         if self.cond_dropout > 0:
-            drop_species = torch.rand(batch_size, device=self.device) < self.cond_dropout
-            drop_groups  = torch.rand(batch_size, device=self.device) < self.cond_dropout
-            drop_mic     = torch.rand(batch_size, device=self.device) < self.cond_dropout
+            # Split batch into 4 portions: [0, q1), [q1, q2), [q2, q3), [q3, batch_size)
+            q1 = batch_size // 4
+            q2 = batch_size // 2
+            q3 = (3 * batch_size) // 4
+
+            # Portion 1: Drop everything
+            drop_species[:q1] = True
+            drop_groups[:q1]  = True
+            drop_mic[:q1]     = True
+
+            # Portion 2: Only keep species (drop groups & mic)
+            drop_groups[q1:q2] = True
+            drop_mic[q1:q2]    = True
+
+            # Portion 3: Only keep groups (drop species & mic)
+            drop_species[q2:q3] = True
+            drop_mic[q2:q3]     = True
+
+            # Portion 4: Only keep mic (drop species & groups)
+            drop_species[q3:] = True
+            drop_groups[q3:]  = True
 
         t = torch.rand(batch_size, device=self.device)
         mask_prob = 1.0 - t.unsqueeze(-1)
@@ -177,7 +195,7 @@ class DiscreteFlowMatching(L.LightningModule):
         if self.global_rank == 0:
             if hasattr(self.trainer.datamodule, 'token_dict'):
                 tokens_dict = self.trainer.datamodule.token_dict
-            else:
+            else:mask_drop
                 print("Warning: 'token_dict' not found in DataModule. Skipping generation.")
                 return
 
@@ -295,7 +313,7 @@ class DiscreteFlowMatching(L.LightningModule):
             
             if length_pool is not None and len(length_pool) > 0:
                 # Draw from the real corpus length distribution. A SAFE molecule
-                # is ~300 tokens; a uniform [14, 36) draw would only ever produce
+                # is ~300 tokens; a uniform [14, 36mask_drop) draw would only ever produce
                 # truncated fragments.
                 pool = torch.as_tensor(np.asarray(length_pool), dtype=torch.int32)
                 picks = torch.randint(low=0, high=pool.numel(), size=(num_samples,))
@@ -310,7 +328,7 @@ class DiscreteFlowMatching(L.LightningModule):
             
             index_to_token = {i: token for token, i in tokens_dict.items()}
             
-            for _ in range(steps):
+            for _ in range(steps):mask_drop
                 t_tensor = torch.full((num_samples,), t, device=device)
                 
                 # --- 4-PASS COMPOSITIONAL GUIDANCE ---
