@@ -47,7 +47,8 @@ def parse_args():
     # it is the only thing that should differ between sweep runs.
     p.add_argument("--arm", default=None, help=f"one of {sorted(ARMS)}, or omit for the default tokenizer")
     p.add_argument("--tag", default=None, help="output/ subdirectory name (default: timestamp)")
-    p.add_argument("--epochs", type=int, default=501)
+    p.add_argument("--epochs", type=int, default=201,
+               help="Lightning runs 0..N-1; use N+1 to land a checkpoint on N")
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--accumulate", type=int, default=8)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -79,7 +80,7 @@ def main():
         "model_name": "DiT",
         "batch_size": args.batch_size,
         "num_epochs": args.epochs,
-        "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
+        "warmup_ratio": 0.05,   # ~10 epochs of warmup at 201 epochs
         "num_samples": args.num_samples,
         "num_steps": args.num_steps,
         "learning_rate": args.lr,

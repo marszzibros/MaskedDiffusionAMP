@@ -2,9 +2,12 @@
 #
 # Sample one trained arm across the eta x steps grid.
 #
-#   ./scripts/sweep_sample.sh <arm> <checkpoint.ckpt>
-#   ./scripts/sweep_sample.sh brics_none output/2026.../model-epoch_500.ckpt
-#   ./scripts/sweep_sample.sh --dry-run brics_none path/to.ckpt
+#   ./scripts/sample.sh <arm> <checkpoint.ckpt>
+#   ./scripts/sample.sh brics_reorder_safe output/brics_reorder_safe/model-epoch_200.ckpt
+#   ./scripts/sample.sh --dry-run recap_safe path/to.ckpt
+#
+# train.sh calls this automatically when a training job finishes; run it by hand
+# to re-sample an existing checkpoint.
 #
 # 6 etas x 3 step counts = 18 runs of 1000 sequences each per arm.
 #
@@ -31,9 +34,20 @@ STEPS=(100 500 1000)
 N=1000
 BATCH=250
 
-SLICER="${ARM%_*}"; SPLIT="${ARM#*_}"
-TOK="tokenizers/tok_${SLICER}_${SPLIT}.json"
-CSV="tokenizers/safe_${SLICER}.csv"
+# Ask dataset.ARMS rather than splitting the arm name on "_": arm names now
+# contain a variable number of parts (brics_safe, brics_reorder_safe).
+# Ask dataset.ARMS rather than splitting the arm name on "_": arm names have a
+# variable number of parts (brics_safe, brics_reorder_safe). The safe package
+# prints a banner to STDOUT on import, so tag the real line and grep for it.
+read -r TOK CSV < <(.venv/bin/python -c "
+from dataset import ARMS
+import sys
+a = '$ARM'
+if a not in ARMS:
+    sys.exit(1)
+print('ARMPATHS', *ARMS[a])" 2>/dev/null | sed -n 's/^ARMPATHS //p')
+[[ -n "${TOK:-}" && -n "${CSV:-}" ]] || {
+  echo "unknown arm '$ARM' (not in dataset.ARMS)" >&2; exit 2; }
 OUT="samples/${ARM}"
 
 echo "=== preflight ==="

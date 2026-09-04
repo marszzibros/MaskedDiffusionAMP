@@ -6,9 +6,10 @@
 #   ./scripts/sweep_train.sh --dry-run  # preflight + print the commands only
 #   ./scripts/sweep_train.sh --local    # run arms sequentially here, no SLURM
 #
-# Arms are the viable cells of the slicer x splitter grid: brics and recap are
-# the only slicers whose corpora decode (99.5% / 99.1%); hr, rotatable, mmpa and
-# attach blow the SMILES %99 ring-label ceiling and are excluded on purpose.
+# Arms are 2 slicers x {plain, depth-first reordered}, all splitter=safe.
+# hr/rotatable/mmpa/attach are excluded (they overflow the %99 ring-label
+# ceiling); splitter=none is excluded (its merges memorize absolute ring
+# numbers). The reorder axis is the one that actually moves pair span: 144 -> 9.
 #
 # Everything except the arm is pinned in train.sh so the comparison is controlled.
 set -euo pipefail
@@ -16,9 +17,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 cd "$ROOT"
 
-ARMS=(brics_safe brics_none recap_safe recap_none)
-# A fifth arm -- brics_none with max_token_length=16 -- is the memorization
-# guard. It needs its own tokenizer built first; see the note at the bottom.
+ARMS=(brics_safe brics_reorder_safe recap_safe recap_reorder_safe)
+# Built by ./run.sh; dataset.ARMS is the authority on paths.
 
 MODE=sbatch
 for a in "$@"; do
@@ -53,12 +53,16 @@ then
            arm to a loadable tokenizer. Run the block above by hand to see why."
 fi
 
-# 3. every arm needs its tokenizer and corpus on disk
-for arm in "${ARMS[@]}"; do
-  s="${arm%_*}"; p="${arm#*_}"
-  [[ -s "tokenizers/tok_${s}_${p}.json" ]] || say_fail "missing tokenizers/tok_${s}_${p}.json"
-  [[ -s "tokenizers/safe_${s}.csv"      ]] || say_fail "missing tokenizers/safe_${s}.csv"
-done
+# 3. every arm needs its tokenizer and corpus on disk. Paths come from
+#    dataset.ARMS -- arm names have a variable number of "_" parts
+#    (brics_safe vs brics_reorder_safe), so they cannot be split by hand.
+while read -r arm tok csv; do
+  [[ -s "$tok" ]] || say_fail "$arm: missing $tok  (run ./run.sh)"
+  [[ -s "$csv" ]] || say_fail "$arm: missing $csv  (run ./run.sh)"
+done < <(.venv/bin/python -c "
+from dataset import ARMS
+for a in ${ARMS[@]@Q}.split():
+    print('ARMPATHS', a, *ARMS[a])" 2>/dev/null | sed -n 's/^ARMPATHS //p')
 
 if [[ "$fail" -ne 0 ]]; then
   cat >&2 <<'MSG'

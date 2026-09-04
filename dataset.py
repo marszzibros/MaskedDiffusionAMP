@@ -27,14 +27,18 @@ TARGET_OBJECTS = ['LIPID BILAYER', 'DNA / RNA', 'CYTOPLASMIC PROTEIN', 'MEMBRANE
 CONDITION_DIM = len(TARGET_SPECIES) + len(TARGET_GROUPS) + len(TARGET_OBJECTS) + 10
 TOKENIZER_PATH = "tokenizer_vocab.csv"
 
-# arm -> (tokenizer, SAFE corpus). Built by run.sh; only brics and recap are
-# here because the other slicers blow the SMILES %99 ring-label ceiling and
-# their corpora are 2-62% decodable.
+# arm -> (tokenizer, SAFE corpus), all built by run.sh.
+#
+# Only brics and recap: the other slicers blow the SMILES %99 ring-label ceiling
+# and their corpora decode at 2-62%. Only splitter=safe: with splitter=none BPE
+# bakes absolute ring numbers into its merges. The _reorder arms are the same
+# corpus with fragments re-emitted depth-first (scripts/reorder_safe.py), which
+# cuts median pair span ~16x at identical token count and vocabulary.
 ARMS = {
-    "brics_safe": ("tokenizers/tok_brics_safe.json", "tokenizers/safe_brics.csv"),
-    "brics_none": ("tokenizers/tok_brics_none.json", "tokenizers/safe_brics.csv"),
-    "recap_safe": ("tokenizers/tok_recap_safe.json", "tokenizers/safe_recap.csv"),
-    "recap_none": ("tokenizers/tok_recap_none.json", "tokenizers/safe_recap.csv"),
+    "brics_safe":         ("tokenizers/tok_brics_safe.json",         "tokenizers/safe_brics.csv"),
+    "brics_reorder_safe": ("tokenizers/tok_brics_reorder_safe.json", "tokenizers/safe_brics_reorder.csv"),
+    "recap_safe":         ("tokenizers/tok_recap_safe.json",         "tokenizers/safe_recap.csv"),
+    "recap_reorder_safe": ("tokenizers/tok_recap_reorder_safe.json", "tokenizers/safe_recap_reorder.csv"),
 }
 
 

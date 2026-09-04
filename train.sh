@@ -41,7 +41,10 @@ BATCH=16
 ACC=8
 LR=1e-4
 SEED=0
-EPOCHS=501
+# 201 not 200: Lightning runs epochs 0..max-1 and ForceSaveCallback fires on
+# epoch %% 25 == 0, so 200 would stop at a checkpoint from epoch 175 and throw
+# the last 24 epochs away. 201 puts the final checkpoint at exactly 200.
+EPOCHS=201
 # Sequence length differs ~19x between arms, so scale denoising steps with it
 # rather than fixing 100 for all -- otherwise short arms idle and long arms
 # are under-resolved. 2.5 steps/token puts smiles_ape_1030 near 40 and
@@ -72,3 +75,31 @@ python trainer.py \
     --num_samples "${NUM_SAMPLES}" \
     --seed "${SEED}" \
     "$@"
+
+# --- sampling, in the same job -----------------------------------------------
+# Runs on the allocation we already hold, so there is no second queue wait and
+# no chance of sampling a checkpoint that never got written. --tag pins the
+# output directory to the arm name, so the final checkpoint is predictable:
+# EPOCHS=201 trains epochs 0..200 and ForceSaveCallback writes epoch 200.
+#
+# Skip it with:  SKIP_SAMPLE=1 sbatch --job-name=<arm> train.sh <arm>
+if [[ "${SKIP_SAMPLE:-0}" == "1" ]]; then
+    echo "[sample] SKIP_SAMPLE=1 -- stopping after training"
+    exit 0
+fi
+
+CKPT="output/${ARM}/model-epoch_$((EPOCHS - 1)).ckpt"
+if [[ ! -s "${CKPT}" ]]; then
+    echo "[sample] no checkpoint at ${CKPT} -- listing what training produced:"
+    ls -1 "output/${ARM}" 2>/dev/null | sed 's/^/           /' || echo "           (no output dir)"
+    exit 1
+fi
+
+echo
+echo "[sample] ${ARM} <- ${CKPT}"
+# Training already succeeded at this point; a sampling failure should be
+# reported loudly but must not make the whole job look like a failed run.
+if ! ./scripts/sample.sh "${ARM}" "${CKPT}"; then
+    echo "[sample] FAILED for ${ARM} -- training checkpoints are intact in output/${ARM}"
+    echo "[sample] rerun by hand: ./scripts/sample.sh ${ARM} ${CKPT}"
+fi
