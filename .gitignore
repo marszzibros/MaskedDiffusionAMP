@@ -14,3 +14,4 @@ out.csv
 per_sample*.csv
 *.csv
 *.gz
+sweep_arms.tsv

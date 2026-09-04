@@ -5,9 +5,8 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 import lightning as L
-
 import safe as sf
-from safe import SAFETokenizer
+from custom_tokenizer import OrthogonalSafeTokenizer
 from rdkit import Chem, RDLogger
 
 # SAFE decoding of a half-trained model produces a lot of invalid fragments;
@@ -26,6 +25,60 @@ TARGET_GROUPS = ['GRAM-', 'GRAM+', 'MAMMALIAN CELL', 'FUNGUS', 'OTHER']
 TARGET_OBJECTS = ['LIPID BILAYER', 'DNA / RNA', 'CYTOPLASMIC PROTEIN', 'MEMBRANE PROTEIN', 'OTHER']
 
 CONDITION_DIM = len(TARGET_SPECIES) + len(TARGET_GROUPS) + len(TARGET_OBJECTS) + 10
+TOKENIZER_PATH = "tokenizer_vocab.csv"
+
+# arm -> (tokenizer, SAFE corpus). Built by run.sh; only brics and recap are
+# here because the other slicers blow the SMILES %99 ring-label ceiling and
+# their corpora are 2-62% decodable.
+ARMS = {
+    "brics_safe": ("tokenizers/tok_brics_safe.json", "tokenizers/safe_brics.csv"),
+    "brics_none": ("tokenizers/tok_brics_none.json", "tokenizers/safe_brics.csv"),
+    "recap_safe": ("tokenizers/tok_recap_safe.json", "tokenizers/safe_recap.csv"),
+    "recap_none": ("tokenizers/tok_recap_none.json", "tokenizers/safe_recap.csv"),
+}
+
+
+class _SafeJsonTokenizer:
+    """SAFETokenizer wearing OrthogonalSafeTokenizer's interface.
+
+    The two disagree on three things -- constructor, vocab accessor and decode --
+    so this adapts the .json format onto the surface dataset.py already uses
+    (.token2id / .encode / .decode) rather than forking every call site.
+    """
+
+    def __init__(self, path):
+        from safe import SAFETokenizer
+        self._tok = SAFETokenizer.load(path)
+        self._hf = self._tok.get_pretrained()
+        self.token2id = dict(self._hf.get_vocab())
+
+    def encode(self, safe_string, add_special_tokens=True):
+        # SAFETokenizer.encode always adds them; it has no opt-out.
+        return self._tok.encode(safe_string)
+
+    def decode(self, ids, skip_special_tokens=True):
+        return self._hf.decode(list(ids), skip_special_tokens=skip_special_tokens)
+
+
+def load_tokenizer(path):
+    """Load a SAFETokenizer .json or an OrthogonalSafeTokenizer .csv vocab.
+
+    Dispatch on extension because OrthogonalSafeTokenizer.load_csv() given a
+    .json returns an EMPTY vocabulary without raising -- a silent failure that
+    otherwise surfaces much later as garbage decoding.
+    """
+    tok = _SafeJsonTokenizer(path) if str(path).endswith(".json") \
+        else OrthogonalSafeTokenizer.load_csv(path)
+    if not tok.token2id:
+        raise ValueError(
+            f"tokenizer at {path!r} loaded an empty vocabulary -- wrong format "
+            f"for this loader?")
+    return tok
+
+
+def encode_safe_strings(tokenizer, safe_strings):
+    return [tokenizer.encode(safe_string, add_special_tokens=True)
+            for safe_string in safe_strings]
 
 
 def parse_list(value):
@@ -40,13 +93,13 @@ def parse_list(value):
 class AMPSafeConditions:
     """Joins the peptide table, the per-species activity table and the SAFE strings."""
 
-    def __init__(self, data_path, mic_bins=10):
+    def __init__(self, data_path, mic_bins=10, safe_csv=None):
         dbaasp_dir = os.path.join(data_path, "dbaasp")
         safe_dir = os.path.join(data_path, "safe")
 
         amp = pd.read_csv(os.path.join(dbaasp_dir, "amp.csv"))
         activity = pd.read_csv(os.path.join(dbaasp_dir, "amp_activity.csv"))
-        safe = pd.read_csv(os.path.join(safe_dir, "amp_safe.csv"))
+        safe = pd.read_csv(safe_csv or os.path.join(safe_dir, "modified_amp_safe.csv"))
 
         amp['targetGroups'] = amp['targetGroups'].apply(parse_list)
         amp['targetObjects'] = amp['targetObjects'].apply(parse_list)
@@ -77,21 +130,23 @@ class AMPSafeConditions:
 class AMPSafeDataset(Dataset):
     """SAFE-encoded peptides conditioned on (species, target groups, MIC bin)."""
 
-    def __init__(self, data_path="molecular_dataset/dataset/data/", max_length=None, mic_bins=10):
+    def __init__(self, data_path="molecular_dataset/dataset/data/", max_length=None,
+                 mic_bins=10, arm=None):
         # max_length=None keeps every molecule: the cutoff is set to the longest
-        
-        self.conditions = AMPSafeConditions(data_path, mic_bins=mic_bins)
+        # arm=None keeps the previous behaviour (the CSV vocab + modified_amp_safe).
+        tokenizer_path, safe_csv = ARMS.get(arm, (TOKENIZER_PATH, None))
+        if arm is not None and arm not in ARMS:
+            raise ValueError(f"unknown arm {arm!r}; known arms: {sorted(ARMS)}")
+        self.arm = arm
 
-        tokenizer_path = os.path.join(data_path, "safe", "tokenizer.json")
-        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
+        self.conditions = AMPSafeConditions(data_path, mic_bins=mic_bins, safe_csv=safe_csv)
 
-        # Read the special ids off the tokenizer rather than hardcoding them:
-        # this tokenizer.json disagrees with itself between `added_tokens` and
-        # `model.vocab` on which id is [PAD] / [MASK], and the tokenizer object
-        # is the side that actually governs encoding.
-        self.pad_token_id = self.tokenizer.pad_token_id
-        self.mask_token_id = self.tokenizer.mask_token_id
-        self.token_dict = self.tokenizer.get_vocab()
+        self.tokenizer = load_tokenizer(tokenizer_path)
+
+        # Read special ids from the loaded vocabulary rather than hardcoding them.
+        self.pad_token_id = self.tokenizer.token2id.get("[PAD]")
+        self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
+        self.token_dict = self.tokenizer.token2id
         self.num_tokens = len(self.token_dict)
 
         if self.pad_token_id is None or self.mask_token_id is None:
@@ -101,12 +156,7 @@ class AMPSafeDataset(Dataset):
 
         # Tokenize each distinct molecule once, then index per activity row.
         unique = df[['amp_id', 'safe']].drop_duplicates('amp_id').reset_index(drop=True)
-        encoded = self.tokenizer(
-            unique['safe'].tolist(),
-            add_special_tokens=True,
-            padding=False,
-            truncation=False,
-            return_attention_mask=False)['input_ids']
+        encoded = encode_safe_strings(self.tokenizer, unique['safe'].tolist())
 
         lengths = np.array([len(ids) for ids in encoded])
         self.max_length = int(lengths.max()) if max_length is None else int(max_length)
@@ -185,11 +235,11 @@ class SafeDecoder:
     ids -> SAFE string -> SMILES, plus a validity score for candidate ranking.
     """
 
-    def __init__(self, tokenizer_path):
-        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
-        self.pad_token_id = self.tokenizer.pad_token_id
-        self.mask_token_id = self.tokenizer.mask_token_id
-        self.token_dict = self.tokenizer.get_vocab()
+    def __init__(self, tokenizer_path=TOKENIZER_PATH):
+        self.tokenizer = load_tokenizer(tokenizer_path)
+        self.pad_token_id = self.tokenizer.token2id.get("[PAD]")
+        self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
+        self.token_dict = self.tokenizer.token2id
 
     def decode(self, ids):
         if isinstance(ids, torch.Tensor):
@@ -216,9 +266,7 @@ class SafeDecoder:
     def length_pool(self, safe_csv_path):
         """Token lengths of the real corpus, to draw generation lengths from."""
         df = pd.read_csv(safe_csv_path).dropna(subset=['safe'])
-        encoded = self.tokenizer(df['safe'].tolist(), add_special_tokens=True,
-                                 padding=False, truncation=False,
-                                 return_attention_mask=False)['input_ids']
+        encoded = encode_safe_strings(self.tokenizer, df['safe'].tolist())
         return np.array([len(ids) for ids in encoded])
 
 
@@ -259,8 +307,9 @@ def collate_pad(batch, pad_token_id, multiple_of=32):
 
 class AMPSafeDataModule(L.LightningDataModule):
     def __init__(self, file_path="molecular_dataset/dataset/data/", max_length=None,
-                 batch_size=16, mic_bins=10, num_workers=4):
+                 batch_size=16, mic_bins=10, num_workers=4, arm=None):
         super().__init__()
+        self.arm = arm
         self.file_path = file_path
         self.max_length = max_length
         self.batch_size = batch_size
@@ -272,7 +321,8 @@ class AMPSafeDataModule(L.LightningDataModule):
         if self.full_dataset is not None:
             return
         self.full_dataset = AMPSafeDataset(
-            data_path=self.file_path, max_length=self.max_length, mic_bins=self.mic_bins)
+            data_path=self.file_path, max_length=self.max_length,
+            mic_bins=self.mic_bins, arm=self.arm)
 
         # Surfaced for trainer.py and for DiscreteFlowMatching's decoding.
         self.token_dict = self.full_dataset.token_dict
@@ -312,12 +362,12 @@ class UniProtSafeDataset(Dataset):
     Build the CSV with build_uniprot_corpus.py
     """
 
-    def __init__(self, csv_path, tokenizer_path="molecular_dataset/dataset/data/safe/tokenizer.json",
+    def __init__(self, csv_path, tokenizer_path=TOKENIZER_PATH,
                  max_length=None, limit=None):
-        self.tokenizer = SAFETokenizer.load(tokenizer_path).get_pretrained()
-        self.pad_token_id = self.tokenizer.pad_token_id
-        self.mask_token_id = self.tokenizer.mask_token_id
-        self.token_dict = self.tokenizer.get_vocab()
+        self.tokenizer = load_tokenizer(tokenizer_path)
+        self.pad_token_id = self.tokenizer.token2id.get("[PAD]")
+        self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
+        self.token_dict = self.tokenizer.token2id
         self.num_tokens = len(self.token_dict)
         if self.pad_token_id is None or self.mask_token_id is None:
             raise ValueError("Tokenizer is missing a [PAD] or [MASK] token.")
@@ -331,9 +381,7 @@ class UniProtSafeDataset(Dataset):
         if limit:
             df = df.head(limit)
 
-        encoded = self.tokenizer(
-            df['safe'].tolist(), add_special_tokens=True, padding=False,
-            truncation=False, return_attention_mask=False)['input_ids']
+        encoded = encode_safe_strings(self.tokenizer, df['safe'].tolist())
 
         lengths = np.array([len(ids) for ids in encoded])
         # max_length need not match the AMP run: DDitFinalLayer stores seq_length
@@ -376,7 +424,7 @@ class UniProtSafeDataset(Dataset):
 class UniProtSafeDataModule(L.LightningDataModule):
     """Drop-in replacement for AMPSafeDataModule during pretraining."""
 
-    def __init__(self, csv_path, tokenizer_path="molecular_dataset/dataset/data/safe/tokenizer.json",
+    def __init__(self, csv_path, tokenizer_path=TOKENIZER_PATH,
                  max_length=None, batch_size=16, num_workers=4, limit=None):
         super().__init__()
         self.csv_path = csv_path

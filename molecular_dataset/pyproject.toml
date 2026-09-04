@@ -1,0 +1,21 @@
+[project]
+name = "molecular-dataset"
+version = "0.1.0"
+description = "Build an antimicrobial-peptide (AMP) dataset from DBAASP and train a SAFE tokenizer."
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.34",
+    "numpy>=2.5",
+    "pandas>=3.0",
+    "rdkit>=2026.3.4",
+    "datamol>=0.12.5",
+    "safe-mol>=0.1.14",
+    "tokenizers>=0.22",
+    # safe-mol 0.1.x imports symbols that transformers 5.x removed, so it must be
+    # kept on the 4.x line (safe-mol itself declares no upper bound).
+    "transformers>=4.42,<5",
+]
+
+# This repo is a collection of scripts, not an installable package.
+[tool.uv]
+package = false

@@ -4,7 +4,8 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint, Callback
 
 from DFM import DiscreteFlowMatching
-from dataset import AMPSafeDataModule
+from dataset import AMPSafeDataModule, ARMS
+import argparse
 import datetime
 import time
 import sys
@@ -40,26 +41,50 @@ class ForceSaveCallback(Callback):
             # if trainer.global_rank == 0:
             #     print(f"\n[Checkpointer] Saved interval checkpoint: {filename}")
 
-def main():
+def parse_args():
+    p = argparse.ArgumentParser(description="Train the AMP masked-diffusion model.")
+    # --arm fixes the tokenizer AND the SAFE corpus together (dataset.ARMS);
+    # it is the only thing that should differ between sweep runs.
+    p.add_argument("--arm", default=None, help=f"one of {sorted(ARMS)}, or omit for the default tokenizer")
+    p.add_argument("--tag", default=None, help="output/ subdirectory name (default: timestamp)")
+    p.add_argument("--epochs", type=int, default=501)
+    p.add_argument("--batch_size", type=int, default=16)
+    p.add_argument("--accumulate", type=int, default=8)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--hidden_size", type=int, default=1536)
+    p.add_argument("--n_blocks", type=int, default=16)
+    p.add_argument("--n_heads", type=int, default=12)
+    p.add_argument("--num_samples", type=int, default=5, help="per-epoch samples; 0 disables")
+    p.add_argument("--seed", type=int, default=0)
+    # Sequence length differs several-fold between arms, so denoising steps are
+    # scaled to the corpus rather than fixed -- otherwise short arms idle and
+    # long arms are under-resolved. Set --num_steps to override outright.
+    p.add_argument("--steps_per_token", type=float, default=None)
+    p.add_argument("--num_steps", type=int, default=100)
+    return p.parse_args()
 
-    
+
+def main():
+    args = parse_args()
+    L.seed_everything(args.seed, workers=True)
+
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    
-    run_name = f"{timestamp}"
+
+    run_name = args.tag or timestamp
     output_dir = os.path.join("./", "output", run_name)
-    
+
     os.makedirs(output_dir, exist_ok=True)
-    
+
     model_config = {
         "model_name": "DiT",
-        "batch_size": 16,
-        "num_epochs": 501,
+        "batch_size": args.batch_size,
+        "num_epochs": args.epochs,
         "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
-        "num_samples": 5,
-        "num_steps": 100,
-        "learning_rate": 1e-4,
+        "num_samples": args.num_samples,
+        "num_steps": args.num_steps,
+        "learning_rate": args.lr,
         "scheduler_name": "cosine",
-        "accumulate_grad_batches": 8,   # effective batch 128
+        "accumulate_grad_batches": args.accumulate,   # effective batch 128
         "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
         "eta": 5,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
@@ -67,15 +92,17 @@ def main():
         # 492M params, ~86 GB peak at batch 16 -- H200 (141 GB) only; this does
         # not fit a 16 GB card. n_heads must divide hidden_size: 1536/12 = 128,
         # which is one of flash-attn's tuned head dimensions (96 is not).
-        "hidden_size": 1536,
-        "n_blocks": 16,
-        "n_heads": 12,
+        "hidden_size": args.hidden_size,
+        "n_blocks": args.n_blocks,
+        "n_heads": args.n_heads,
     }
 
+    model_config["arm"] = args.arm
     dataset = AMPSafeDataModule(
         file_path="molecular_dataset/dataset/data/",
         max_length=model_config['max_length'],
-        batch_size=model_config['batch_size'])
+        batch_size=model_config['batch_size'],
+        arm=args.arm)
 
     # Built here (rather than left to Lightning) so the vocab and the special
     # token ids come from the tokenizer instead of being hardcoded.
@@ -84,6 +111,9 @@ def main():
     model_config['mask_token_id'] = dataset.mask_token_id
     model_config['pad_token_id'] = dataset.pad_token_id
     model_config['max_length'] = dataset.max_length
+    if args.steps_per_token is not None:
+        model_config['num_steps'] = max(1, int(round(args.steps_per_token * dataset.max_length)))
+    print(f"[Arm ] {args.arm or 'default'}  ->  steps {model_config['num_steps']}")
     print(f"[Data] {len(dataset.full_dataset)} examples, vocab {dataset.num_tokens}, "
           f"max_length {dataset.max_length}, median length {int(np.median(dataset.length_pool))}")
 

@@ -97,7 +97,6 @@ def main(args):
                     eta=current_eta,
                     temperature=args.temperature,
                     k_samples=args.k_samples,
-                    use_charge_filter=args.use_charge_filter,
                     length_pool=length_pool,
                     decode_fn=decoder.decode,
                     score_fn=decoder.score if args.k_samples > 1 else None,
