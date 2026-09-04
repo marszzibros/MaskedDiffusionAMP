@@ -1,4 +1,3 @@
-/data
 /logs
 /results
 /output
@@ -13,3 +12,5 @@ out.csv
 *.gz
 .train_canonical.csv
 per_sample*.csv
+*.csv
+*.gz
