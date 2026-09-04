@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=nvgpu
-#SBATCH --constraint=GPU_SKU:H200
-#SBATCH --exclude=h2node09
+#SBATCH --constraint=GPU_SKU:RTX6000
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
@@ -76,13 +75,13 @@ python trainer.py \
     --seed "${SEED}" \
     "$@"
 
-# --- sampling, in the same job -----------------------------------------------
-# Runs on the allocation we already hold, so there is no second queue wait and
-# no chance of sampling a checkpoint that never got written. --tag pins the
+# --- fan out sampling -------------------------------------------------------
+# Submits 18 independent sampling jobs (6 etas x 3 step counts) rather than
+# running them back to back here, so they queue in parallel. --tag pins the
 # output directory to the arm name, so the final checkpoint is predictable:
 # EPOCHS=201 trains epochs 0..200 and ForceSaveCallback writes epoch 200.
 #
-# Skip it with:  SKIP_SAMPLE=1 sbatch --job-name=<arm> train.sh <arm>
+# Skip with:  SKIP_SAMPLE=1 sbatch --job-name=<arm> train.sh <arm>
 if [[ "${SKIP_SAMPLE:-0}" == "1" ]]; then
     echo "[sample] SKIP_SAMPLE=1 -- stopping after training"
     exit 0
@@ -96,10 +95,9 @@ if [[ ! -s "${CKPT}" ]]; then
 fi
 
 echo
-echo "[sample] ${ARM} <- ${CKPT}"
-# Training already succeeded at this point; a sampling failure should be
-# reported loudly but must not make the whole job look like a failed run.
+echo "[sample] fanning out ${ARM} <- ${CKPT}"
+# Training already succeeded; a submit failure must not mark the run failed.
 if ! ./scripts/sample.sh "${ARM}" "${CKPT}"; then
-    echo "[sample] FAILED for ${ARM} -- training checkpoints are intact in output/${ARM}"
-    echo "[sample] rerun by hand: ./scripts/sample.sh ${ARM} ${CKPT}"
+    echo "[sample] submission FAILED for ${ARM} -- checkpoints are intact in output/${ARM}"
+    echo "[sample] retry by hand: ./scripts/sample.sh ${ARM} ${CKPT}"
 fi

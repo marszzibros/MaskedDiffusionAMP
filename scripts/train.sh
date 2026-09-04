@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=nvgpu
-#SBATCH --constraint=GPU_SKU:H200
-#SBATCH --exclude=h2node09
+#SBATCH --constraint=GPU_SKU:RTX6000
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
