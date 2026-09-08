@@ -135,4 +135,4 @@ def convert_and_validate(input_csv: str | Path, output_csv: str | Path | None = 
 
 
 if __name__ == '__main__':
-    convert_and_validate('molecular_dataset/dataset/data/safe/amp_safe.csv')
+    convert_and_validate('molecular_dataset/dataset/data/safe/modified_amp_safe.csv')
