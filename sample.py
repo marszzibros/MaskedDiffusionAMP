@@ -108,7 +108,7 @@ def main(args):
                     smiles = decoder.smiles_from_safe(seq)
                     n_valid += smiles is not None
                     n_total += 1
-                    f_out.write(f"{seq}\t{smiles if smiles else 'INVALID'}\n")
+                    f_out.write(f"{seq},{smiles if smiles else 'INVALID'}\n")
 
     pct = 100 * n_valid / max(n_total, 1)
     print(f"Done! {total_samples} samples saved to: {args.output_file}")
@@ -128,11 +128,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, required=True, help="Total number of samples to generate")
     
     # Optional arguments
-    parser.add_argument("--output_file", type=str, default="test.txt", help="Where to save the results")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size for generation (adjust based on GPU memory)")
+    parser.add_argument("--output_file", type=str, default="test.csv", help="Where to save the results")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for generation (adjust based on GPU memory)")
     parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
-    parser.add_argument("--steps", type=int, default=100, help="Number of steps for generation")
+    parser.add_argument("--steps", type=int, default=1000, help="Number of steps for generation")
     parser.add_argument("--k_samples", type=int, default=1, help="Number of candidate samples to generate per token step when filtering by charge")
     parser.add_argument("--species", type=int, nargs="+", default=[0], help="List of species indices")
     parser.add_argument("--groups", type=int, nargs="+", default=[0], help="List of groups indices")

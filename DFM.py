@@ -328,7 +328,7 @@ class DiscreteFlowMatching(L.LightningModule):
             
             index_to_token = {i: token for token, i in tokens_dict.items()}
             
-            for _ in range(steps):
+            for step in range(steps):
                 t_tensor = torch.full((num_samples,), t, device=device)
                 
                 # --- 4-PASS COMPOSITIONAL GUIDANCE ---
