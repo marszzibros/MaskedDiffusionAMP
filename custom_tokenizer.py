@@ -283,7 +283,7 @@ class OrthogonalSafeTokenizer:
 if __name__ == "__main__":
     import os
 
-    csv_data = "molecular_dataset/dataset/data/safe/amp_safe.csv"
+    csv_data = "molecular_dataset/dataset/data/safe/modified_amp_safe.csv"
 
     print("=== Step 1: Fitting OrthogonalSafeTokenizer ===")
     df = pd.read_csv(csv_data)
@@ -301,7 +301,7 @@ if __name__ == "__main__":
     print(f"Chemistry Tokens ({len(chem_tokens)}): Top 10 = {chem_tokens[:10]}")
 
     print("\n=== Step 2: Saving Tokenizer to CSV ===")
-    csv_file_path = "tokenizer_vocab.csv"
+    csv_file_path = "tokenizer_vocab_modified.csv"
     tokenizer.save_csv(csv_file_path)
 
     print("\n=== Step 3: Loading Tokenizer from CSV & Verifying Fixed IDs ===")

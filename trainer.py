@@ -53,7 +53,7 @@ def main():
     model_config = {
         "model_name": "DiT",
         "batch_size": 16,
-        "num_epochs": 201,
+        "num_epochs": 150,
         "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
         "num_samples": 5,
         "num_steps": 1000,
@@ -61,7 +61,7 @@ def main():
         "scheduler_name": "cosine",
         "accumulate_grad_batches": 8,   # effective batch 128
         "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
-        "eta": 500,
+        "eta": 700,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         "cond_dropout": 0.1,
         # 492M params, ~86 GB peak at batch 16 -- H200 (141 GB) only; this does
