@@ -52,24 +52,24 @@ def main():
     
     model_config = {
         "model_name": "DiT",
-        "batch_size": 16,
-        "num_epochs": 150,
+        "batch_size": 64,
+        "num_epochs": 1501,
         "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
-        "num_samples": 5,
-        "num_steps": 1000,
+        "num_samples": 10,
+        "num_steps": 300,
         "learning_rate": 1e-4,
         "scheduler_name": "cosine",
-        "accumulate_grad_batches": 8,   # effective batch 128
+        "accumulate_grad_batches": 1,   # effective batch 128
         "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
-        "eta": 700,
+        "eta": 0.2,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         "cond_dropout": 0.1,
         # 492M params, ~86 GB peak at batch 16 -- H200 (141 GB) only; this does
         # not fit a 16 GB card. n_heads must divide hidden_size: 1536/12 = 128,
         # which is one of flash-attn's tuned head dimensions (96 is not).
-        "hidden_size": 1536,
-        "n_blocks": 16,
-        "n_heads": 12,
+        "hidden_size": 768,
+        "n_blocks": 8,
+        "n_heads": 8,
     }
 
     dataset = AMPSafeDataModule(
