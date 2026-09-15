@@ -1,4 +1,3 @@
-
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint, Callback
@@ -52,24 +51,21 @@ def main():
     
     model_config = {
         "model_name": "DiT",
-        "batch_size": 64,
-        "num_epochs": 1501,
+        "batch_size": 16,
+        "num_epochs": 501,
         "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
         "num_samples": 10,
-        "num_steps": 300,
+        "num_steps": 500,
         "learning_rate": 1e-4,
         "scheduler_name": "cosine",
         "accumulate_grad_batches": 1,   # effective batch 128
         "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
-        "eta": 0.2,
+        "eta": 2.0,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         "cond_dropout": 0.1,
-        # 492M params, ~86 GB peak at batch 16 -- H200 (141 GB) only; this does
-        # not fit a 16 GB card. n_heads must divide hidden_size: 1536/12 = 128,
-        # which is one of flash-attn's tuned head dimensions (96 is not).
-        "hidden_size": 768,
-        "n_blocks": 8,
-        "n_heads": 8,
+        "hidden_size": 1024,
+        "n_blocks": 24,
+        "n_heads": 16,
     }
 
     dataset = AMPSafeDataModule(
@@ -84,6 +80,8 @@ def main():
     model_config['mask_token_id'] = dataset.mask_token_id
     model_config['pad_token_id'] = dataset.pad_token_id
     model_config['max_length'] = dataset.max_length
+    model_config['topology_token_ids'] = dataset.topology_token_ids
+    model_config['chemical_token_ids'] = dataset.chemical_token_ids
     print(f"[Data] {len(dataset.full_dataset)} examples, vocab {dataset.num_tokens}, "
           f"max_length {dataset.max_length}, median length {int(np.median(dataset.length_pool))}")
 
@@ -105,6 +103,8 @@ def main():
         max_length=model_config['max_length'],
         mask_token_id=model_config['mask_token_id'], 
         pad_token_id=model_config['pad_token_id'],
+        topology_token_ids=model_config['topology_token_ids'],
+        chemical_token_ids=model_config['chemical_token_ids'],
         eta=model_config['eta'],
         output_dir=model_config['output_dir'],
         cond_dropout=model_config['cond_dropout'],

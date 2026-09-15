@@ -23,6 +23,8 @@ class DiscreteFlowMatching(L.LightningModule):
                  max_length=None,
                  mask_token_id=None, 
                  pad_token_id=None, 
+                 topology_token_ids=None,
+                 chemical_token_ids=None,
                  eta=0.0,
                  output_dir=None,
                  cond_dropout=0.1,
@@ -48,6 +50,14 @@ class DiscreteFlowMatching(L.LightningModule):
         self.eta = eta 
         self.cond_dropout = cond_dropout
         
+        if topology_token_ids is None:
+            topology_token_ids = []
+        if chemical_token_ids is None:
+            chemical_token_ids = []
+            
+        self.register_buffer("topo_ids", torch.tensor(topology_token_ids, dtype=torch.long), persistent=False)
+        self.register_buffer("chem_ids", torch.tensor(chemical_token_ids, dtype=torch.long), persistent=False)
+
         # Store dimensions for generation helper
         self.dims = {'species': species_dim, 'groups': groups_dim, 'mic': mic_dim}
 
@@ -64,6 +74,15 @@ class DiscreteFlowMatching(L.LightningModule):
 
         self.ema = EMA(self.model.parameters(), decay=0.9999)
         self.automatic_optimization = False
+
+    def _get_mask_prob(self, t, t_start, t_end):
+        if not isinstance(t, torch.Tensor):
+            t = torch.tensor(t, device=self.device)
+        diff = t_end - t_start
+        if diff == 0:
+            diff = 1e-6
+        val = torch.clamp((t - t_start) / diff, 0.0, 1.0)
+        return 0.5 * (1.0 + torch.cos(torch.pi * val))
         
     def on_save_checkpoint(self, checkpoint):
         if self.ema is not None:
@@ -132,7 +151,18 @@ class DiscreteFlowMatching(L.LightningModule):
             drop_groups[q3:]  = True
 
         t = torch.rand(batch_size, device=self.device)
-        mask_prob = 1.0 - t.unsqueeze(-1)
+        t_unsq = t.unsqueeze(-1)
+        
+        base_mask_prob = 1.0 - t_unsq
+        topo_mask_prob = self._get_mask_prob(t_unsq, 0.0, 0.5)
+        chem_mask_prob = self._get_mask_prob(t_unsq, 0.3, 1.0)
+        
+        is_topo = torch.isin(x_1, self.topo_ids)
+        is_chem = torch.isin(x_1, self.chem_ids)
+        
+        mask_prob = torch.where(is_topo, topo_mask_prob, base_mask_prob)
+        mask_prob = torch.where(is_chem, chem_mask_prob, mask_prob)
+        
         random_mask = torch.rand(batch_size, seq_len, device=self.device) < mask_prob
         
         if self.pad_token_id is not None:
@@ -201,7 +231,7 @@ class DiscreteFlowMatching(L.LightningModule):
 
             # Example conditions for validation generation
             example_cond = {'species': [1], 'groups': [2], 'mic': 7}
-            example_scales = {'species': 1.5, 'groups': 1.5, 'mic': 3.0}
+            example_scales = {'species': 1.0, 'groups': 1.0, 'mic': 1.0}
 
             datamodule = self.trainer.datamodule
             sequences = self.generate_sample(
@@ -396,8 +426,31 @@ class DiscreteFlowMatching(L.LightningModule):
                 
                 x1_sample = Categorical(x1_probs).sample()
                 
-                unmask_rate = dt * (1 + eta * t) / (1 - t + 1e-6)
-                unmask_rate = min(unmask_rate, 1.0)
+                t_scalar = torch.tensor(t, device=device)
+                t_next = torch.tensor(t + dt, device=device)
+                
+                # 1. 计算拓扑基础解掩码率 (Base Rate = (P_t - P_{t+dt}) / P_t)
+                p_topo_t = self._get_mask_prob(t_scalar, 0.0, 0.5)
+                p_topo_next = self._get_mask_prob(t_next, 0.0, 0.5)
+                base_unmask_topo = (p_topo_t - p_topo_next) / (p_topo_t + 1e-6)
+                
+                # 2. 计算化学基础解掩码率
+                p_chem_t = self._get_mask_prob(t_scalar, 0.3, 1.0)
+                p_chem_next = self._get_mask_prob(t_next, 0.3, 1.0)
+                base_unmask_chem = (p_chem_t - p_chem_next) / (p_chem_t + 1e-6)
+                
+                # 3. 依赖模型预测来分派 Rate
+                is_pred_topo = torch.isin(x1_sample, self.topo_ids)
+                is_pred_chem = torch.isin(x1_sample, self.chem_ids)
+                
+                # 默认回退 rate
+                base_unmask_rate = torch.full_like(x.float(), dt / (1 - t + 1e-6))
+                base_unmask_rate = torch.where(is_pred_topo, base_unmask_topo, base_unmask_rate)
+                base_unmask_rate = torch.where(is_pred_chem, base_unmask_chem, base_unmask_rate)
+                
+                # 4. 施加 eta (Langevin 噪声) 调节
+                unmask_rate = base_unmask_rate * (1 + eta * t)
+                unmask_rate = torch.clamp(unmask_rate, 0.0, 1.0)
                 
                 should_unmask = torch.rand_like(x.float()) < unmask_rate
                 
@@ -406,13 +459,28 @@ class DiscreteFlowMatching(L.LightningModule):
                 x = torch.where(is_masked & should_unmask, x1_sample, x)
                 
                 if eta > 0 and (t + dt < 1.0):
-                    remask_rate = dt * eta
-                    remask_rate = min(remask_rate, 1.0)
+                    # 1. 识别当前 x 中已经显露的 Token 属于什么类型
+                    is_curr_topo = torch.isin(x, self.topo_ids)
+                    is_curr_chem = torch.isin(x, self.chem_ids)
                     
+                    # 2. 用各自的 Schedule 概率来动态缩放基础的加噪率
+                    # 当 p_topo_t 降到 0 时（即 t>0.5），拓扑 Token 的重掩码率自动降为 0（绝对锁定）
+                    remask_topo = dt * eta * p_topo_t
+                    remask_chem = dt * eta * p_chem_t
+                    
+                    # 对于 Padding 或未分类的 Token，给一个跟随 1-t 衰减的基础退火率
+                    remask_base = torch.full_like(x.float(), dt * eta * (1.0 - t))
+                    
+                    # 3. 组合出像素级/Token级的动态重掩码率
+                    remask_rate = torch.where(is_curr_topo, remask_topo, remask_base)
+                    remask_rate = torch.where(is_curr_chem, remask_chem, remask_rate)
+                    
+                    # 安全截断并生成 Mask 矩阵
+                    remask_rate = torch.clamp(remask_rate, 0.0, 1.0)
                     should_remask = torch.rand_like(x.float()) < remask_rate
                     
+                    # 4. 只对非 MASK 且非 PAD 的 Token 执行重掩码
                     is_revealed = (x != self.mask_token_id)
-                    
                     if self.pad_token_id is not None:
                         is_not_padding = (x != self.pad_token_id)
                         is_revealed = is_revealed & is_not_padding
@@ -420,6 +488,18 @@ class DiscreteFlowMatching(L.LightningModule):
                     x = torch.where(is_revealed & should_remask,  torch.tensor(self.mask_token_id, device=device),  x)
                 
                 t += dt
+
+                # Debugging: Print the first two sequences at specific time steps
+                # if t < 0.3 and t > 0.25:
+                #     if decode_fn is not None:
+                #         x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                #         print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+
+                # if t < 0.8 and t > 0.75:
+                #     if decode_fn is not None:
+                #         x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                #         print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+
 
             if decode_fn is not None:
                 x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()

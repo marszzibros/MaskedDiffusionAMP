@@ -96,6 +96,10 @@ class AMPSafeDataset(Dataset):
         self.token_dict = self.tokenizer.token2id
         self.num_tokens = len(self.token_dict)
 
+        df_vocab = pd.read_csv(TOKENIZER_PATH)
+        self.topology_token_ids = df_vocab[df_vocab['type'] == 'topology']['id'].tolist() if 'type' in df_vocab.columns else []
+        self.chemical_token_ids = df_vocab[df_vocab['type'] == 'chemistry']['id'].tolist() if 'type' in df_vocab.columns else []
+
         if self.pad_token_id is None or self.mask_token_id is None:
             raise ValueError("Tokenizer is missing a [PAD] or [MASK] token.")
 
@@ -158,11 +162,11 @@ class AMPSafeDataset(Dataset):
 
     # ---- decoding -------------------------------------------------------
 
-    def decode(self, ids):
+    def decode(self, ids, skip_special_tokens=True):
         """Token ids -> SAFE string, with [PAD]/[CLS]/[SEP] removed."""
         if isinstance(ids, torch.Tensor):
             ids = ids.detach().cpu().tolist()
-        return self.tokenizer.decode(list(ids), skip_special_tokens=True).replace(' ', '')
+        return self.tokenizer.decode(list(ids), skip_special_tokens=skip_special_tokens).replace(' ', '')
 
     def decode_to_smiles(self, ids):
         """Token ids -> (safe_string, smiles or None).
@@ -171,7 +175,7 @@ class AMPSafeDataset(Dataset):
         molecule -- unbalanced ring closures, a fragment cut off mid-attachment,
         an unparseable atom block. This is the validity signal worth logging.
         """
-        safe_str = self.decode(ids)
+        safe_str = self.decode(ids, skip_special_tokens=False)
         return safe_str, safe_to_smiles(safe_str)
 
 
@@ -188,10 +192,10 @@ class SafeDecoder:
         self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
         self.token_dict = self.tokenizer.token2id
 
-    def decode(self, ids):
+    def decode(self, ids, skip_special_tokens=True):
         if isinstance(ids, torch.Tensor):
             ids = ids.detach().cpu().tolist()
-        return self.tokenizer.decode(list(ids), skip_special_tokens=True).replace(' ', '')
+        return self.tokenizer.decode(list(ids), skip_special_tokens=skip_special_tokens).replace(' ', '')
 
     def smiles_from_safe(self, safe_str):
         return safe_to_smiles(safe_str)
@@ -275,11 +279,13 @@ class AMPSafeDataModule(L.LightningDataModule):
         self.mask_token_id = self.full_dataset.mask_token_id
         self.pad_token_id = self.full_dataset.pad_token_id
         self.max_length = self.full_dataset.max_length
+        self.topology_token_ids = self.full_dataset.topology_token_ids
+        self.chemical_token_ids = self.full_dataset.chemical_token_ids
         # Empirical token-length distribution, used to draw sampling lengths.
         self.length_pool = self.full_dataset.token_lengths
 
-    def decode(self, ids):
-        return self.full_dataset.decode(ids)
+    def decode(self, ids, skip_special_tokens=True):
+        return self.full_dataset.decode(ids, skip_special_tokens=skip_special_tokens)
 
     def decode_to_smiles(self, ids):
         return self.full_dataset.decode_to_smiles(ids)
@@ -356,10 +362,10 @@ class UniProtSafeDataset(Dataset):
             "condition": self._null_condition,
         }
 
-    def decode(self, ids):
+    def decode(self, ids, skip_special_tokens=True):
         if isinstance(ids, torch.Tensor):
             ids = ids.detach().cpu().tolist()
-        return self.tokenizer.decode(list(ids), skip_special_tokens=True).replace(' ', '')
+        return self.tokenizer.decode(list(ids), skip_special_tokens=skip_special_tokens).replace(' ', '')
 
     def decode_to_smiles(self, ids):
         safe_str = self.decode(ids)
@@ -394,8 +400,8 @@ class UniProtSafeDataModule(L.LightningDataModule):
         self.max_length = self.full_dataset.max_length
         self.length_pool = self.full_dataset.token_lengths
 
-    def decode(self, ids):
-        return self.full_dataset.decode(ids)
+    def decode(self, ids, skip_special_tokens=True):
+        return self.full_dataset.decode(ids, skip_special_tokens=skip_special_tokens)
 
     def decode_to_smiles(self, ids):
         return self.full_dataset.decode_to_smiles(ids)
