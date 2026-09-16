@@ -4,7 +4,7 @@ import io
 from collections import Counter
 
 
-TOKENIZER_PATTERN = re.compile(r'\[[^\]]+\]|[%0-9\.\(\)]|[^%0-9\.\(\)\[\]]+')
+TOKENIZER_PATTERN = re.compile(r'\[[^\]]+\]|%\(\d+\)|%\d{2}|[0-9\.\(\)]|[^%0-9\.\(\)\[\]]+')
 
 class OrthogonalSafeTokenizer:
     SPECIAL_TOKENS = ["[PAD]", "[CLS]", "[SEP]", "[MASK]", "[UNK]"]
@@ -44,6 +44,8 @@ class OrthogonalSafeTokenizer:
     def is_indivisible(self, token):
         """Check if a token cannot be broken down further."""
         if len(token) <= 1:
+            return True
+        if re.fullmatch(r'%\(\d+\)|%\d{2}', token):
             return True
         if token.startswith('[') and token.endswith(']'):
             return True
@@ -119,7 +121,7 @@ class OrthogonalSafeTokenizer:
 
         # 2. Topology tokens
         full_vocab = list(self.vocab_counter.keys())
-        topo_tokens = sorted([t for t in full_vocab if t in self.topo_symbols])
+        topo_tokens = sorted([t for t in full_vocab if t in self.topo_symbols or bool(re.fullmatch(r'%\(\d+\)|%\d{2}', t))])
         for t in sorted(self.topo_symbols):
             if t not in topo_tokens:
                 topo_tokens.append(t)
@@ -228,7 +230,7 @@ class OrthogonalSafeTokenizer:
         for tok, idx in sorted(self.token2id.items(), key=lambda x: x[1]):
             if tok in special_set:
                 tok_type = "special"
-            elif tok in self.topo_symbols:
+            elif tok in self.topo_symbols or bool(re.fullmatch(r'%\(\d+\)|%\d{2}', tok)):
                 tok_type = "topology"
             else:
                 tok_type = "chemistry"
