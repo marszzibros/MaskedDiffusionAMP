@@ -25,7 +25,7 @@ TARGET_GROUPS = ['GRAM-', 'GRAM+', 'MAMMALIAN CELL', 'FUNGUS', 'OTHER']
 TARGET_OBJECTS = ['LIPID BILAYER', 'DNA / RNA', 'CYTOPLASMIC PROTEIN', 'MEMBRANE PROTEIN', 'OTHER']
 
 CONDITION_DIM = len(TARGET_SPECIES) + len(TARGET_GROUPS) + len(TARGET_OBJECTS) + 10
-TOKENIZER_PATH = "tokenizer_vocab.csv"
+TOKENIZER_PATH = "tokenizer_vocab_modified.csv"
 
 
 def encode_safe_strings(tokenizer, safe_strings):

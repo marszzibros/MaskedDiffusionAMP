@@ -421,6 +421,10 @@ class DiscreteFlowMatching(L.LightningModule):
                 logits[:, :, self.mask_token_id] = -float('inf')
                 if self.pad_token_id is not None:
                     logits[:, :, self.pad_token_id] = -float('inf')
+
+                # logits[:, :, 1] = -float('inf')  # Prevent sampling the CLS token
+                # logits[:, :, 2] = -float('inf')  # Prevent sampling the SEP token
+                # logits[:, :, 4] = -float('inf')  # Prevent sampling the UNK token
                 
                 x1_probs = F.softmax(logits, dim=-1)
                 
@@ -489,16 +493,28 @@ class DiscreteFlowMatching(L.LightningModule):
                 
                 t += dt
 
-                # Debugging: Print the first two sequences at specific time steps
-                # if t < 0.3 and t > 0.25:
-                #     if decode_fn is not None:
-                #         x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
-                #         print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
-
-                # if t < 0.8 and t > 0.75:
-                #     if decode_fn is not None:
-                #         x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
-                #         print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+                # # Debugging: Print the first two sequences at specific time steps
+                if t < 0.3 and t > 0.25:
+                    if decode_fn is not None:
+                        x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                        print("---------------------------------------------------------------------------")
+                        print('early')
+                        print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+                        print("---------------------------------------------------------------------------")
+                if t < 0.5 and t > 0.45:
+                    if decode_fn is not None:
+                        x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                        print("---------------------------------------------------------------------------")
+                        print('mid')
+                        print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+                        print("---------------------------------------------------------------------------")
+                if t < 0.8 and t > 0.75:
+                    if decode_fn is not None:
+                        x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                        print("---------------------------------------------------------------------------")
+                        print('late')
+                        print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+                        print("---------------------------------------------------------------------------")
 
 
             if decode_fn is not None:

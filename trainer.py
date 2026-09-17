@@ -64,8 +64,8 @@ def main():
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         "cond_dropout": 0.1,
         "hidden_size": 1024,
-        "n_blocks": 24,
-        "n_heads": 16,
+        "n_blocks": 8,
+        "n_heads": 8,
     }
 
     dataset = AMPSafeDataModule(
