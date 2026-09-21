@@ -65,6 +65,7 @@ def main(args):
     import random
     n_valid = n_total = 0
     with open(args.output_file, "w") as f_out:
+        f_out.write("SAFE, SMILES\n")
         with torch.no_grad():
             for i in tqdm(range(num_batches), desc="Sampling"):
                 # Determine how many samples to generate in this specific batch
@@ -108,7 +109,7 @@ def main(args):
                     smiles = decoder.smiles_from_safe(seq)
                     n_valid += smiles is not None
                     n_total += 1
-                    f_out.write(f"{seq},{smiles if smiles else 'INVALID'}\n")
+                    f_out.write(f"{smiles if smiles else 'INVALID'}, {seq}\n")
 
     pct = 100 * n_valid / max(n_total, 1)
     print(f"Done! {total_samples} samples saved to: {args.output_file}")
@@ -120,10 +121,10 @@ if __name__ == "__main__":
     # Required arguments
     parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to the .ckpt file")
     parser.add_argument("--tokenizer_path", type=str,
-                        default="tokenizer_vocab.csv",
+                        default="tokenizer_vocab_modified.csv",
                         help="Path to the tokenizer vocabulary CSV")
     parser.add_argument("--safe_csv", type=str,
-                        default="molecular_dataset/dataset/data/safe/amp_safe.csv",
+                        default="molecular_dataset/dataset/data/safe/modified_amp_safe.csv",
                         help="Corpus used to draw realistic generation lengths; pass '' to disable")
     parser.add_argument("--num_samples", type=int, required=True, help="Total number of samples to generate")
     
@@ -132,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for generation (adjust based on GPU memory)")
     parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
-    parser.add_argument("--steps", type=int, default=1000, help="Number of steps for generation")
+    parser.add_argument("--steps", type=int, default=500, help="Number of steps for generation")
     parser.add_argument("--k_samples", type=int, default=1, help="Number of candidate samples to generate per token step when filtering by charge")
     parser.add_argument("--species", type=int, nargs="+", default=[0], help="List of species indices")
     parser.add_argument("--groups", type=int, nargs="+", default=[0], help="List of groups indices")

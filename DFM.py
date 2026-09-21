@@ -446,6 +446,7 @@ class DiscreteFlowMatching(L.LightningModule):
                 # 3. 依赖模型预测来分派 Rate
                 is_pred_topo = torch.isin(x1_sample, self.topo_ids)
                 is_pred_chem = torch.isin(x1_sample, self.chem_ids)
+                is_pred_base = ~(is_pred_topo | is_pred_chem)
                 
                 # 默认回退 rate
                 base_unmask_rate = torch.full_like(x.float(), dt / (1 - t + 1e-6))
@@ -455,17 +456,48 @@ class DiscreteFlowMatching(L.LightningModule):
                 # 4. 施加 eta (Langevin 噪声) 调节
                 unmask_rate = base_unmask_rate * (1 + eta * t)
                 unmask_rate = torch.clamp(unmask_rate, 0.0, 1.0)
-                
-                should_unmask = torch.rand_like(x.float()) < unmask_rate
+
                 
                 is_masked = (x == self.mask_token_id)
                 
-                x = torch.where(is_masked & should_unmask, x1_sample, x)
+                # 5. Calculate stochastic confidence
+                gumbel_noise = -torch.log(-torch.log(torch.rand_like(x.float()) + 1e-9) + 1e-9)
+                
+                # For unmasking, use confidence of the predicted token
+                pred_probs = x1_probs.gather(dim=-1, index=x1_sample.unsqueeze(-1)).squeeze(-1)
+                pred_conf = torch.log(pred_probs + 1e-9) + gumbel_noise * (1.0 - t)
+                
+                def get_topk_mask(mask_group, num_to_select, conf):
+                    group_conf = torch.where(mask_group, conf, torch.full_like(conf, -float('inf')))
+                    sorted_indices = torch.argsort(group_conf, dim=-1, descending=True)
+                    batch_size, seq_len = mask_group.shape
+                    batch_indices = torch.arange(batch_size, device=mask_group.device).unsqueeze(1)
+                    rank = torch.empty_like(sorted_indices)
+                    rank[batch_indices, sorted_indices] = torch.arange(seq_len, device=mask_group.device).unsqueeze(0)
+                    selected_mask = rank < num_to_select.unsqueeze(1)
+                    return selected_mask & mask_group
+                
+                is_masked_topo = is_masked & is_pred_topo
+                is_masked_chem = is_masked & is_pred_chem
+                is_masked_base = is_masked & is_pred_base
+                
+                num_unmask_topo = (is_masked_topo.float() * unmask_rate).sum(dim=1).round().long()
+                num_unmask_chem = (is_masked_chem.float() * unmask_rate).sum(dim=1).round().long()
+                num_unmask_base = (is_masked_base.float() * unmask_rate).sum(dim=1).round().long()
+                
+                should_unmask_topo = get_topk_mask(is_masked_topo, num_unmask_topo, pred_conf)
+                should_unmask_chem = get_topk_mask(is_masked_chem, num_unmask_chem, pred_conf)
+                should_unmask_base = get_topk_mask(is_masked_base, num_unmask_base, pred_conf)
+                
+                should_unmask = should_unmask_topo | should_unmask_chem | should_unmask_base
+                
+                x = torch.where(should_unmask, x1_sample, x)
                 
                 if eta > 0 and (t + dt < 1.0):
                     # 1. 识别当前 x 中已经显露的 Token 属于什么类型
                     is_curr_topo = torch.isin(x, self.topo_ids)
                     is_curr_chem = torch.isin(x, self.chem_ids)
+                    is_curr_base = ~(is_curr_topo | is_curr_chem)
                     
                     # 2. 用各自的 Schedule 概率来动态缩放基础的加噪率
                     # 当 p_topo_t 降到 0 时（即 t>0.5），拓扑 Token 的重掩码率自动降为 0（绝对锁定）
@@ -473,48 +505,68 @@ class DiscreteFlowMatching(L.LightningModule):
                     remask_chem = dt * eta * p_chem_t
                     
                     # 对于 Padding 或未分类的 Token，给一个跟随 1-t 衰减的基础退火率
-                    remask_base = torch.full_like(x.float(), dt * eta * (1.0 - t))
+                    remask_base_rate = dt * eta * (1.0 - t)
                     
                     # 3. 组合出像素级/Token级的动态重掩码率
-                    remask_rate = torch.where(is_curr_topo, remask_topo, remask_base)
+                    remask_rate = torch.full_like(x.float(), remask_base_rate)
+                    remask_rate = torch.where(is_curr_topo, remask_topo, remask_rate)
                     remask_rate = torch.where(is_curr_chem, remask_chem, remask_rate)
                     
-                    # 安全截断并生成 Mask 矩阵
                     remask_rate = torch.clamp(remask_rate, 0.0, 1.0)
-                    should_remask = torch.rand_like(x.float()) < remask_rate
                     
                     # 4. 只对非 MASK 且非 PAD 的 Token 执行重掩码
                     is_revealed = (x != self.mask_token_id)
                     if self.pad_token_id is not None:
-                        is_not_padding = (x != self.pad_token_id)
-                        is_revealed = is_revealed & is_not_padding
+                        is_revealed = is_revealed & (x != self.pad_token_id)
+                        
+                    is_revealed_topo = is_revealed & is_curr_topo
+                    is_revealed_chem = is_revealed & is_curr_chem
+                    is_revealed_base = is_revealed & is_curr_base
                     
-                    x = torch.where(is_revealed & should_remask,  torch.tensor(self.mask_token_id, device=device),  x)
+                    num_remask_topo = (is_revealed_topo.float() * remask_rate).sum(dim=1).round().long()
+                    num_remask_chem = (is_revealed_chem.float() * remask_rate).sum(dim=1).round().long()
+                    num_remask_base = (is_revealed_base.float() * remask_rate).sum(dim=1).round().long()
+                    
+                    # For remasking, use confidence of the CURRENTLY REVEALED token
+                    safe_x = torch.where(x == self.mask_token_id, torch.zeros_like(x), x)
+                    if self.pad_token_id is not None:
+                        safe_x = torch.where(safe_x == self.pad_token_id, torch.zeros_like(safe_x), safe_x)
+                    curr_probs = x1_probs.gather(dim=-1, index=safe_x.unsqueeze(-1)).squeeze(-1)
+                    curr_conf = torch.log(curr_probs + 1e-9) + gumbel_noise * (1.0 - t)
+                    
+                    # Remask the LEAST confident tokens, so we pass -curr_conf
+                    should_remask_topo = get_topk_mask(is_revealed_topo, num_remask_topo, -curr_conf)
+                    should_remask_chem = get_topk_mask(is_revealed_chem, num_remask_chem, -curr_conf)
+                    should_remask_base = get_topk_mask(is_revealed_base, num_remask_base, -curr_conf)
+                    
+                    should_remask = should_remask_topo | should_remask_chem | should_remask_base
+                    
+                    x = torch.where(should_remask,  torch.tensor(self.mask_token_id, device=device),  x)
                 
                 t += dt
 
                 # # Debugging: Print the first two sequences at specific time steps
-                if t < 0.3 and t > 0.25:
-                    if decode_fn is not None:
-                        x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
-                        print("---------------------------------------------------------------------------")
-                        print('early')
-                        print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
-                        print("---------------------------------------------------------------------------")
-                if t < 0.5 and t > 0.45:
-                    if decode_fn is not None:
-                        x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
-                        print("---------------------------------------------------------------------------")
-                        print('mid')
-                        print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
-                        print("---------------------------------------------------------------------------")
-                if t < 0.8 and t > 0.75:
-                    if decode_fn is not None:
-                        x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
-                        print("---------------------------------------------------------------------------")
-                        print('late')
-                        print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
-                        print("---------------------------------------------------------------------------")
+                # if t < 0.3 and t > 0.25:
+                #     if decode_fn is not None:
+                #         x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                #         print("---------------------------------------------------------------------------")
+                #         print('early')
+                #         print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+                #         print("---------------------------------------------------------------------------")
+                # if t < 0.5 and t > 0.45:
+                #     if decode_fn is not None:
+                #         x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                #         print("---------------------------------------------------------------------------")
+                #         print('mid')
+                #         print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+                #         print("---------------------------------------------------------------------------")
+                # if t < 0.8 and t > 0.75:
+                #     if decode_fn is not None:
+                #         x_np, lens_np = x.cpu().numpy(), lengths.cpu().numpy()
+                #         print("---------------------------------------------------------------------------")
+                #         print('late')
+                #         print([decode_fn(seq[:length], skip_special_tokens=False) for seq, length in zip(x_np[0:2], lens_np[0:2])])
+                #         print("---------------------------------------------------------------------------")
 
 
             if decode_fn is not None:
