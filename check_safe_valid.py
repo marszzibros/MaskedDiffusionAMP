@@ -81,6 +81,6 @@ def safe_to_smiles(safe_str):
 
 if __name__ == "__main__":
     # Example usage
-    safe_str = "[C@@H]12NC(=O)[C@H]3NC(=O)[C@H]4NC1=O.c15ccccc1.c16ccccc1.C76.C65.NC(N)=NCCC2.C3CCN=C(C)C.C4CCN=C(N)N"
+    safe_str = "NC(N)=NCCC[C@H]1C2=O.N31.C3(=O)[C@@H]4CS.N54.C5(=O)[C@@H]6CCN.N76.C7(=O)[C@@H]8C9.N%108.C%10(=O)[C@@H](N)CCCN=C%119%10%12.c%109c[nH]c%12ccccc%11%12.c%10%13ccc(O)cc%10.[C@H]%14(C%13)C(=O)O.N%15%14.C%16(=O)C%15%11%12"
     smiles = safe_to_smiles(safe_str)
     print(f"SMILES: {smiles}")

@@ -448,24 +448,42 @@ class DiscreteFlowMatching(L.LightningModule):
                 is_pred_chem = torch.isin(x1_sample, self.chem_ids)
                 is_pred_base = ~(is_pred_topo | is_pred_chem)
                 
+                # --- Hardcoded hybrid strategy for testing ---
+                topo_eta = 10.0
+                chem_eta = 5.0
+                base_eta = 5.0
+                
+                topo_noise_scale = 1.0
+                chem_noise_scale = 1.0
+                base_noise_scale = 1.0
+                # ---------------------------------------------
+                
                 # 默认回退 rate
                 base_unmask_rate = torch.full_like(x.float(), dt / (1 - t + 1e-6))
                 base_unmask_rate = torch.where(is_pred_topo, base_unmask_topo, base_unmask_rate)
                 base_unmask_rate = torch.where(is_pred_chem, base_unmask_chem, base_unmask_rate)
                 
                 # 4. 施加 eta (Langevin 噪声) 调节
-                unmask_rate = base_unmask_rate * (1 + eta * t)
+                eta_map = torch.full_like(x.float(), base_eta)
+                eta_map = torch.where(is_pred_topo, torch.full_like(eta_map, topo_eta), eta_map)
+                eta_map = torch.where(is_pred_chem, torch.full_like(eta_map, chem_eta), eta_map)
+                
+                unmask_rate = base_unmask_rate * (1 + eta_map * t)
                 unmask_rate = torch.clamp(unmask_rate, 0.0, 1.0)
 
-                
                 is_masked = (x == self.mask_token_id)
                 
                 # 5. Calculate stochastic confidence
                 gumbel_noise = -torch.log(-torch.log(torch.rand_like(x.float()) + 1e-9) + 1e-9)
                 
+                # Apply token-specific noise scale for unmasking
+                unmask_noise_scale = torch.full_like(x.float(), base_noise_scale)
+                unmask_noise_scale = torch.where(is_pred_topo, torch.full_like(unmask_noise_scale, topo_noise_scale), unmask_noise_scale)
+                unmask_noise_scale = torch.where(is_pred_chem, torch.full_like(unmask_noise_scale, chem_noise_scale), unmask_noise_scale)
+                
                 # For unmasking, use confidence of the predicted token
                 pred_probs = x1_probs.gather(dim=-1, index=x1_sample.unsqueeze(-1)).squeeze(-1)
-                pred_conf = torch.log(pred_probs + 1e-9) + gumbel_noise * (1.0 - t)
+                pred_conf = torch.log(pred_probs + 1e-9) + gumbel_noise * unmask_noise_scale * (1.0 - t)
                 
                 def get_topk_mask(mask_group, num_to_select, conf):
                     group_conf = torch.where(mask_group, conf, torch.full_like(conf, -float('inf')))
@@ -499,18 +517,23 @@ class DiscreteFlowMatching(L.LightningModule):
                     is_curr_chem = torch.isin(x, self.chem_ids)
                     is_curr_base = ~(is_curr_topo | is_curr_chem)
                     
+                    curr_eta_map = torch.full_like(x.float(), base_eta)
+                    curr_eta_map = torch.where(is_curr_topo, torch.full_like(curr_eta_map, topo_eta), curr_eta_map)
+                    curr_eta_map = torch.where(is_curr_chem, torch.full_like(curr_eta_map, chem_eta), curr_eta_map)
+                    
                     # 2. 用各自的 Schedule 概率来动态缩放基础的加噪率
                     # 当 p_topo_t 降到 0 时（即 t>0.5），拓扑 Token 的重掩码率自动降为 0（绝对锁定）
-                    remask_topo = dt * eta * p_topo_t
-                    remask_chem = dt * eta * p_chem_t
+                    remask_topo = dt * curr_eta_map * p_topo_t
+                    remask_chem = dt * curr_eta_map * p_chem_t
                     
                     # 对于 Padding 或未分类的 Token，给一个跟随 1-t 衰减的基础退火率
-                    remask_base_rate = dt * eta * (1.0 - t)
+                    remask_base_rate = dt * curr_eta_map * (1.0 - t)
                     
                     # 3. 组合出像素级/Token级的动态重掩码率
-                    remask_rate = torch.full_like(x.float(), remask_base_rate)
+                    remask_rate = torch.full_like(x.float(), 0.0)
                     remask_rate = torch.where(is_curr_topo, remask_topo, remask_rate)
                     remask_rate = torch.where(is_curr_chem, remask_chem, remask_rate)
+                    remask_rate = torch.where(is_curr_base, remask_base_rate, remask_rate)
                     
                     remask_rate = torch.clamp(remask_rate, 0.0, 1.0)
                     
@@ -527,12 +550,17 @@ class DiscreteFlowMatching(L.LightningModule):
                     num_remask_chem = (is_revealed_chem.float() * remask_rate).sum(dim=1).round().long()
                     num_remask_base = (is_revealed_base.float() * remask_rate).sum(dim=1).round().long()
                     
+                    # Apply token-specific noise scale for remasking
+                    remask_noise_scale = torch.full_like(x.float(), base_noise_scale)
+                    remask_noise_scale = torch.where(is_curr_topo, torch.full_like(remask_noise_scale, topo_noise_scale), remask_noise_scale)
+                    remask_noise_scale = torch.where(is_curr_chem, torch.full_like(remask_noise_scale, chem_noise_scale), remask_noise_scale)
+
                     # For remasking, use confidence of the CURRENTLY REVEALED token
                     safe_x = torch.where(x == self.mask_token_id, torch.zeros_like(x), x)
                     if self.pad_token_id is not None:
                         safe_x = torch.where(safe_x == self.pad_token_id, torch.zeros_like(safe_x), safe_x)
                     curr_probs = x1_probs.gather(dim=-1, index=safe_x.unsqueeze(-1)).squeeze(-1)
-                    curr_conf = torch.log(curr_probs + 1e-9) + gumbel_noise * (1.0 - t)
+                    curr_conf = torch.log(curr_probs + 1e-9) + gumbel_noise * remask_noise_scale * (1.0 - t)
                     
                     # Remask the LEAST confident tokens, so we pass -curr_conf
                     should_remask_topo = get_topk_mask(is_revealed_topo, num_remask_topo, -curr_conf)
