@@ -51,8 +51,8 @@ def main():
     
     model_config = {
         "model_name": "DiT",
-        "batch_size": 16,
-        "num_epochs": 501,
+        "batch_size": 8,
+        "num_epochs": 51,
         "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
         "num_samples": 10,
         "num_steps": 500,
@@ -60,7 +60,9 @@ def main():
         "scheduler_name": "cosine",
         "accumulate_grad_batches": 1,   # effective batch 128
         "max_length": None, # None = fit the longest molecule in the corpus (1374 tokens)
-        "eta": 2.0,
+        "topo_eta": 10.0,
+        "chem_eta": 5.0,
+        "base_eta": 5.0,
         "output_dir": output_dir, # Pass output_dir so model knows where to save generated samples
         "cond_dropout": 0.1,
         "hidden_size": 768,
@@ -105,7 +107,9 @@ def main():
         pad_token_id=model_config['pad_token_id'],
         topology_token_ids=model_config['topology_token_ids'],
         chemical_token_ids=model_config['chemical_token_ids'],
-        eta=model_config['eta'],
+        topo_eta=model_config['topo_eta'],
+        chem_eta=model_config['chem_eta'],
+        base_eta=model_config['base_eta'],
         output_dir=model_config['output_dir'],
         cond_dropout=model_config['cond_dropout'],
         hidden_size=model_config['hidden_size'],

@@ -30,8 +30,15 @@ def main(args):
         model.ema.move_shadow_params_to_device(device)
     model.eval()
 
-    current_eta = args.eta if args.eta is not None else model.eta
-    print(f"Sampling with stochasticity (eta): {current_eta}")
+    if args.topo_eta is not None:
+        model.topo_eta = args.topo_eta
+    if args.chem_eta is not None:
+        model.chem_eta = args.chem_eta
+    if args.base_eta is not None:
+        model.base_eta = args.base_eta
+
+    print(f"Sampling with stochasticity - topo_eta: {model.topo_eta}, chem_eta: {model.chem_eta}, base_eta: {model.base_eta}")
+    print(f"Noise scales - topo_noise_scale: {args.topo_noise_scale}, chem_noise_scale: {args.chem_noise_scale}, base_noise_scale: {args.base_noise_scale}")
 
     decoder = SafeDecoder(args.tokenizer_path)
     token_dict = decoder.token_dict
@@ -95,12 +102,12 @@ def main(args):
                     scales=scales,
                     num_samples=current_batch_n,
                     max_length=model.hparams.max_length,
-                    eta=current_eta,
                     temperature=args.temperature,
-                    k_samples=args.k_samples,
                     length_pool=length_pool,
                     decode_fn=decoder.decode,
-                    score_fn=decoder.score if args.k_samples > 1 else None,
+                    topo_noise_scale=args.topo_noise_scale,
+                    chem_noise_scale=args.chem_noise_scale,
+                    base_noise_scale=args.base_noise_scale,
                 )
 
                 # A SAFE string that does not decode is not a molecule; record
@@ -131,10 +138,14 @@ if __name__ == "__main__":
     # Optional arguments
     parser.add_argument("--output_file", type=str, default="test.csv", help="Where to save the results")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for generation (adjust based on GPU memory)")
-    parser.add_argument("--eta", type=float, default=None, help="Override the stochasticity parameter (default uses model's trained eta)")
+    parser.add_argument("--topo_eta", type=float, default=None, help="Override the stochasticity parameter for topology tokens")
+    parser.add_argument("--chem_eta", type=float, default=None, help="Override the stochasticity parameter for chemical tokens")
+    parser.add_argument("--base_eta", type=float, default=None, help="Override the stochasticity parameter for base tokens")
+    parser.add_argument("--topo_noise_scale", type=float, default=1.0, help="Noise scale for topology tokens")
+    parser.add_argument("--chem_noise_scale", type=float, default=1.0, help="Noise scale for chemical tokens")
+    parser.add_argument("--base_noise_scale", type=float, default=1.0, help="Noise scale for base tokens")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling. Lower = more confident, higher = more diverse")
     parser.add_argument("--steps", type=int, default=500, help="Number of steps for generation")
-    parser.add_argument("--k_samples", type=int, default=1, help="Number of candidate samples to generate per token step when filtering by charge")
     parser.add_argument("--species", type=int, nargs="+", default=[0], help="List of species indices")
     parser.add_argument("--groups", type=int, nargs="+", default=[0], help="List of groups indices")
     parser.add_argument("--mic", type=int, default=2, help="Base MIC value")

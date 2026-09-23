@@ -25,7 +25,9 @@ class DiscreteFlowMatching(L.LightningModule):
                  pad_token_id=None, 
                  topology_token_ids=None,
                  chemical_token_ids=None,
-                 eta=0.0,
+                 topo_eta=10.0,
+                 chem_eta=5.0,
+                 base_eta=5.0,
                  output_dir=None,
                  cond_dropout=0.1,
                  species_dim=6,
@@ -47,7 +49,9 @@ class DiscreteFlowMatching(L.LightningModule):
             
         self.mask_token_id = mask_token_id
         self.pad_token_id = pad_token_id 
-        self.eta = eta 
+        self.topo_eta = topo_eta
+        self.chem_eta = chem_eta
+        self.base_eta = base_eta
         self.cond_dropout = cond_dropout
         
         if topology_token_ids is None:
@@ -291,7 +295,7 @@ class DiscreteFlowMatching(L.LightningModule):
         return out_vec
 
     @torch.no_grad()
-    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=None, eta=None, temperature=1.0, k_samples=1, shortest_length=14, longest_length=36, length_pool=None, decode_fn=None, score_fn=None):
+    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=None, temperature=1.0, shortest_length=14, longest_length=36, length_pool=None, decode_fn=None, topo_noise_scale=1.0, chem_noise_scale=1.0, base_noise_scale=1.0):
         """
         max_length:  defaults to the trained max_length from hparams. Never
                      hardcode it -- a too-small value silently yields stubs.
@@ -299,11 +303,7 @@ class DiscreteFlowMatching(L.LightningModule):
                      Falls back to uniform [shortest_length, longest_length),
                      which is a peptide-residue range and wrong for SAFE.
         decode_fn:   ids -> string. Defaults to joining raw vocab tokens.
-        score_fn:    string -> (is_valid, score), used to rank the k_samples
-                     candidates. Defaults to the peptide net-charge filter.
         """
-        if eta is None:
-            eta = self.eta
         if max_length is None:
             max_length = self.hparams.max_length
 
@@ -448,25 +448,15 @@ class DiscreteFlowMatching(L.LightningModule):
                 is_pred_chem = torch.isin(x1_sample, self.chem_ids)
                 is_pred_base = ~(is_pred_topo | is_pred_chem)
                 
-                # --- Hardcoded hybrid strategy for testing ---
-                topo_eta = 10.0
-                chem_eta = 5.0
-                base_eta = 5.0
-                
-                topo_noise_scale = 1.0
-                chem_noise_scale = 1.0
-                base_noise_scale = 1.0
-                # ---------------------------------------------
-                
                 # 默认回退 rate
                 base_unmask_rate = torch.full_like(x.float(), dt / (1 - t + 1e-6))
                 base_unmask_rate = torch.where(is_pred_topo, base_unmask_topo, base_unmask_rate)
                 base_unmask_rate = torch.where(is_pred_chem, base_unmask_chem, base_unmask_rate)
                 
                 # 4. 施加 eta (Langevin 噪声) 调节
-                eta_map = torch.full_like(x.float(), base_eta)
-                eta_map = torch.where(is_pred_topo, torch.full_like(eta_map, topo_eta), eta_map)
-                eta_map = torch.where(is_pred_chem, torch.full_like(eta_map, chem_eta), eta_map)
+                eta_map = torch.full_like(x.float(), self.base_eta)
+                eta_map = torch.where(is_pred_topo, torch.full_like(eta_map, self.topo_eta), eta_map)
+                eta_map = torch.where(is_pred_chem, torch.full_like(eta_map, self.chem_eta), eta_map)
                 
                 unmask_rate = base_unmask_rate * (1 + eta_map * t)
                 unmask_rate = torch.clamp(unmask_rate, 0.0, 1.0)
@@ -511,15 +501,15 @@ class DiscreteFlowMatching(L.LightningModule):
                 
                 x = torch.where(should_unmask, x1_sample, x)
                 
-                if eta > 0 and (t + dt < 1.0):
+                if (self.topo_eta > 0 or self.chem_eta > 0 or self.base_eta > 0) and (t + dt < 1.0):
                     # 1. 识别当前 x 中已经显露的 Token 属于什么类型
                     is_curr_topo = torch.isin(x, self.topo_ids)
                     is_curr_chem = torch.isin(x, self.chem_ids)
                     is_curr_base = ~(is_curr_topo | is_curr_chem)
                     
-                    curr_eta_map = torch.full_like(x.float(), base_eta)
-                    curr_eta_map = torch.where(is_curr_topo, torch.full_like(curr_eta_map, topo_eta), curr_eta_map)
-                    curr_eta_map = torch.where(is_curr_chem, torch.full_like(curr_eta_map, chem_eta), curr_eta_map)
+                    curr_eta_map = torch.full_like(x.float(), self.base_eta)
+                    curr_eta_map = torch.where(is_curr_topo, torch.full_like(curr_eta_map, self.topo_eta), curr_eta_map)
+                    curr_eta_map = torch.where(is_curr_chem, torch.full_like(curr_eta_map, self.chem_eta), curr_eta_map)
                     
                     # 2. 用各自的 Schedule 概率来动态缩放基础的加噪率
                     # 当 p_topo_t 降到 0 时（即 t>0.5），拓扑 Token 的重掩码率自动降为 0（绝对锁定）
