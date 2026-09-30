@@ -7,7 +7,7 @@ from collections import Counter
 TOKENIZER_PATTERN = re.compile(r'\[[^\]]+\]|%\(\d+\)|%\d{2}|[0-9\.\(\)]|[^%0-9\.\(\)\[\]]+')
 
 class OrthogonalSafeTokenizer:
-    SPECIAL_TOKENS = ["[PAD]", "[MASK]"]
+    SPECIAL_TOKENS = ["[PAD]", "[CLS]", "[SEP]", "[MASK]", "[UNK]"]
 
     def __init__(self, appearance_number=None):
         self.vocab_counter = Counter()
