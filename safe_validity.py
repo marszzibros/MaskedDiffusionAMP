@@ -293,4 +293,4 @@ def locate_safe_errors(safe_str: str):
 
 
 if __name__ == "__main__":
-    locate_safe_errors("CCCCCCCC1=O.N12.[C@H]2(C3=O)C(C)C.N34.[C@@H]4(CCN)C5=O.N56.C6C7=O.N78.[C@@H]8(CO)C9=O.N9%10.[C@@H]%10(C%11)C%12=O.c%13%11cnc[nH]%13.N%13%13CCC[C@H]%13%14.c%13%15ccccc%13.[C@H]%16(C%15)C%17=O.N%18%16.[C@@H]%19(CCN)C%18=O.N%20%19.C%20%14=O.N%17%21.[C@H]%21(C%22=O)C(C)C.N%22%23.[C@H]%23(CCC(=O)O)C%24=O.N%24%25.[C@H]%25(C)C%26=O.N%26%27.C%27C%28=O.N%28%29.C%29(CCCCN)C(N%29%30.[C@H]%30(C)C(=O)O")
+    locate_safe_errors("[C@H]12CSSC[C@@H]=ONC(=O)[C@H]4NC(=O)[C@H]5NC(=O)[C@H]6NC(=O)CNC(=O)[C@H]7NC(=O)[C@H]8NC(=O)[C@H]9NC(=O)[C@H]%10NC(=O)[C@H]%11NC(=O)[C@H]%12NC(=O)[C@H]%13NC(=O)[C@H]%14NC(=O)[C@H]%15NC(=O)[C@H]%16NC(=O)[C@@H]%17CCCN%17C(=O)[C@H]%18NC(=O)[C@H]%19NC(=O)[C@H]%20NC(=O)[C@H]%21NC(=O)[C@H]%22NC1=O.c1%23c[nH]c%19ccccc1%19.c1%24ccc(O)cc1.c1%25ccc(O)cc1.c1%26ccc(O)cc1.c1%27ccccc1.C%12%27.C%26%26.C%14%29.C%13%26.C9%25.C%10%24.C%20%23.N%292.C%30C(C)C.N%29%30.CC%29=O.[C@H]4(C)O.C5(C)C.[C@H]6(C)O.C7(C)C.C8CC(=O)O.C%11CC(=O)O.C%20(C)C.C%15CC(=O)O.C%16CCCN.C%18C(C)C.C%19CCN=C(N)N.C%20C(=O)O.C%21C(N)=O.[C@H]%22(C)O")
