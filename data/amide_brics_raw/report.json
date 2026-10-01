@@ -1,0 +1,22 @@
+{
+  "slicer": "amide_brics",
+  "order": "raw",
+  "corpus": {
+    "n_in": 20522,
+    "n_kept": 20504,
+    "n_dropped": 18,
+    "n_brics_fallback": 1061,
+    "drop_reasons": {
+      "not_encoded_SAFEFragmentationError": 18
+    }
+  },
+  "vocab": {
+    "vocab_size": 206,
+    "type_counts": {
+      "chemistry": 118,
+      "topology": 83,
+      "special": 5
+    },
+    "unk_in_500": 0
+  }
+}

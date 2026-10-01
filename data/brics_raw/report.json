@@ -1,0 +1,23 @@
+{
+  "slicer": "brics",
+  "order": "raw",
+  "corpus": {
+    "n_in": 20522,
+    "n_kept": 20503,
+    "n_dropped": 19,
+    "n_brics_fallback": 20503,
+    "drop_reasons": {
+      "not_encoded_SAFEFragmentationError": 19
+    }
+  },
+  "vocab": {
+    "vocab_size": 179,
+    "type_counts": {
+      "topology": 104,
+      "chemistry": 70,
+      "special": 5
+    },
+    "unk_in_500": 0,
+    "appearance_number": 10
+  }
+}
