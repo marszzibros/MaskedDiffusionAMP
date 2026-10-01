@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import lightning as L
 import safe as sf
-from custom_tokenizer import OrthogonalSafeTokenizer
+from .tokenizer import OrthogonalSafeTokenizer
 from rdkit import Chem, RDLogger
 
 # SAFE decoding of a half-trained model produces a lot of invalid fragments;
@@ -25,12 +25,27 @@ TARGET_GROUPS = ['GRAM-', 'GRAM+', 'MAMMALIAN CELL', 'FUNGUS', 'OTHER']
 TARGET_OBJECTS = ['LIPID BILAYER', 'DNA / RNA', 'CYTOPLASMIC PROTEIN', 'MEMBRANE PROTEIN', 'OTHER']
 
 CONDITION_DIM = len(TARGET_SPECIES) + len(TARGET_GROUPS) + len(TARGET_OBJECTS) + 10
-TOKENIZER_PATH = "tokenizer_vocab_modified.csv"
+_DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+TOKENIZER_PATH = os.path.join(_DATA, "xh", "vocab", "safe_vocab.csv")      # train.py replaces this with the chosen variant's
 
 
 def encode_safe_strings(tokenizer, safe_strings):
     return [tokenizer.encode(safe_string, add_special_tokens=True)
             for safe_string in safe_strings]
+
+
+def token_ids_by_type(tokenizer_path=TOKENIZER_PATH):
+    """(topology_ids, chemistry_ids) from the vocab CSV's `type` column.
+
+    DiscreteFlowMatching masks these two groups on different cosine schedules,
+    so every training stage must be given the same split -- an empty list is
+    not an error, it just silently collapses to uniform masking.
+    """
+    df = pd.read_csv(tokenizer_path)
+    if 'type' not in df.columns:
+        return [], []
+    return (df[df['type'] == 'topology']['id'].tolist(),
+            df[df['type'] == 'chemistry']['id'].tolist())
 
 
 def parse_list(value):
@@ -83,7 +98,7 @@ class AMPSafeConditions:
 class AMPSafeDataset(Dataset):
     """SAFE-encoded peptides conditioned on (species, target groups, MIC bin)."""
 
-    def __init__(self, data_path="molecular_dataset/dataset/data/", max_length=None, mic_bins=10):
+    def __init__(self, data_path=_DATA, max_length=None, mic_bins=10):
         # max_length=None keeps every molecule: the cutoff is set to the longest
         
         self.conditions = AMPSafeConditions(data_path, mic_bins=mic_bins)
@@ -96,9 +111,7 @@ class AMPSafeDataset(Dataset):
         self.token_dict = self.tokenizer.token2id
         self.num_tokens = len(self.token_dict)
 
-        df_vocab = pd.read_csv(TOKENIZER_PATH)
-        self.topology_token_ids = df_vocab[df_vocab['type'] == 'topology']['id'].tolist() if 'type' in df_vocab.columns else []
-        self.chemical_token_ids = df_vocab[df_vocab['type'] == 'chemistry']['id'].tolist() if 'type' in df_vocab.columns else []
+        self.topology_token_ids, self.chemical_token_ids = token_ids_by_type(TOKENIZER_PATH)
 
         if self.pad_token_id is None or self.mask_token_id is None:
             raise ValueError("Tokenizer is missing a [PAD] or [MASK] token.")
@@ -201,10 +214,12 @@ class SafeDecoder:
         return safe_to_smiles(safe_str)
 
     def score(self, safe_str):
-        """(is_valid, score) for ranking k_samples candidates in generate_sample.
+        """(is_valid, score) -- heavy-atom count, so among decodable candidates
+        the larger molecule wins rather than a trivial one-fragment answer.
 
-        Score is heavy-atom count, so among decodable candidates the larger
-        molecule wins rather than a trivial one-fragment answer.
+        Currently unreferenced: upstream 852ae9f dropped generate_sample's
+        k_samples/score_fn candidate ranking, which was its only caller. Kept
+        because it is the natural hook if candidate ranking returns.
         """
         smiles = safe_to_smiles(safe_str)
         if smiles is None:
@@ -239,7 +254,7 @@ def collate_pad(batch, pad_token_id, multiple_of=32):
     """Pad a batch to its own longest member, rounded up to `multiple_of`.
 
     Rounding keeps the number of distinct sequence lengths small, which matters
-    because the DiT's rotary embedding caches per length (models/DiTwithCondition.py).
+    because the DiT's rotary embedding caches per length (amp_diffusion/models/dit.py).
     """
     lengths = [item['sequence'].shape[0] for item in batch]
     width = max(lengths)
@@ -257,7 +272,7 @@ def collate_pad(batch, pad_token_id, multiple_of=32):
 
 
 class AMPSafeDataModule(L.LightningDataModule):
-    def __init__(self, file_path="molecular_dataset/dataset/data/", max_length=None,
+    def __init__(self, file_path=_DATA, max_length=None,
                  batch_size=16, mic_bins=10, num_workers=4):
         super().__init__()
         self.file_path = file_path
@@ -273,7 +288,7 @@ class AMPSafeDataModule(L.LightningDataModule):
         self.full_dataset = AMPSafeDataset(
             data_path=self.file_path, max_length=self.max_length, mic_bins=self.mic_bins)
 
-        # Surfaced for trainer.py and for DiscreteFlowMatching's decoding.
+        # Surfaced for train.py and for DiscreteFlowMatching's decoding.
         self.token_dict = self.full_dataset.token_dict
         self.num_tokens = self.full_dataset.num_tokens
         self.mask_token_id = self.full_dataset.mask_token_id
@@ -282,122 +297,6 @@ class AMPSafeDataModule(L.LightningDataModule):
         self.topology_token_ids = self.full_dataset.topology_token_ids
         self.chemical_token_ids = self.full_dataset.chemical_token_ids
         # Empirical token-length distribution, used to draw sampling lengths.
-        self.length_pool = self.full_dataset.token_lengths
-
-    def decode(self, ids, skip_special_tokens=True):
-        return self.full_dataset.decode(ids, skip_special_tokens=skip_special_tokens)
-
-    def decode_to_smiles(self, ids):
-        return self.full_dataset.decode_to_smiles(ids)
-
-    def smiles_from_safe(self, safe_str):
-        return safe_to_smiles(safe_str)
-
-    def train_dataloader(self):
-        return DataLoader(
-            self.full_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=True,
-            collate_fn=lambda batch: collate_pad(batch, self.pad_token_id),
-        )
-
-
-class UniProtSafeDataset(Dataset):
-    """SAFE-encoded generic peptides from UniRef50, for pretraining.
-    
-    pretrain with cond_dropout=1.0 and VectorEmbedder substitutes its learned
-    null_embedding for all three conditions (see DiTwithCondition.VectorEmbedder).
-
-    Build the CSV with build_uniprot_corpus.py
-    """
-
-    def __init__(self, csv_path, tokenizer_path=TOKENIZER_PATH,
-                 max_length=None, limit=None):
-        self.tokenizer = OrthogonalSafeTokenizer.load_csv(tokenizer_path)
-        self.pad_token_id = self.tokenizer.token2id.get("[PAD]")
-        self.mask_token_id = self.tokenizer.token2id.get("[MASK]")
-        self.token_dict = self.tokenizer.token2id
-        self.num_tokens = len(self.token_dict)
-        if self.pad_token_id is None or self.mask_token_id is None:
-            raise ValueError("Tokenizer is missing a [PAD] or [MASK] token.")
-
-        df = pd.read_csv(csv_path)
-        if 'safe' not in df.columns:
-            raise ValueError(f"{csv_path} has no 'safe' column -- build it with "
-                             f"build_uniprot_corpus.py")
-        df = df.dropna(subset=['safe'])
-        df = df[df['safe'].str.len() > 0].drop_duplicates('safe').reset_index(drop=True)
-        if limit:
-            df = df.head(limit)
-
-        encoded = encode_safe_strings(self.tokenizer, df['safe'].tolist())
-
-        lengths = np.array([len(ids) for ids in encoded])
-        # max_length need not match the AMP run: DDitFinalLayer stores seq_length
-        # but never builds a shape-dependent parameter, so checkpoints transfer
-        # across different values. Passing the AMP value just keeps configs tidy.
-        self.max_length = int(lengths.max()) if max_length is None else int(max_length)
-
-        keep = lengths <= self.max_length
-        dropped = int((~keep).sum())
-        if dropped:
-            print(f"[UniProtSafeDataset] dropped {dropped}/{len(keep)} peptides "
-                  f"longer than max_length={self.max_length} "
-                  f"(longest {int(lengths.max())} tokens)")
-
-        self.sequences = [np.asarray(encoded[i], dtype=np.int64)
-                          for i in np.flatnonzero(keep)]
-        self.token_lengths = np.array([len(s) for s in self.sequences])
-        # One shared zero vector: the conditions are dropped, never read.
-        self._null_condition = torch.zeros(CONDITION_DIM, dtype=torch.float32)
-
-    def __len__(self):
-        return len(self.sequences)
-
-    def __getitem__(self, idx):
-        return {
-            "sequence": torch.from_numpy(self.sequences[idx]),
-            "condition": self._null_condition,
-        }
-
-    def decode(self, ids, skip_special_tokens=True):
-        if isinstance(ids, torch.Tensor):
-            ids = ids.detach().cpu().tolist()
-        return self.tokenizer.decode(list(ids), skip_special_tokens=skip_special_tokens).replace(' ', '')
-
-    def decode_to_smiles(self, ids):
-        safe_str = self.decode(ids)
-        return safe_str, safe_to_smiles(safe_str)
-
-
-class UniProtSafeDataModule(L.LightningDataModule):
-    """Drop-in replacement for AMPSafeDataModule during pretraining."""
-
-    def __init__(self, csv_path, tokenizer_path=TOKENIZER_PATH,
-                 max_length=None, batch_size=16, num_workers=4, limit=None):
-        super().__init__()
-        self.csv_path = csv_path
-        self.tokenizer_path = tokenizer_path
-        self.max_length = max_length
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.limit = limit
-        self.full_dataset = None
-
-    def setup(self, stage=None):
-        if self.full_dataset is not None:
-            return
-        self.full_dataset = UniProtSafeDataset(
-            csv_path=self.csv_path, tokenizer_path=self.tokenizer_path,
-            max_length=self.max_length, limit=self.limit)
-
-        self.token_dict = self.full_dataset.token_dict
-        self.num_tokens = self.full_dataset.num_tokens
-        self.mask_token_id = self.full_dataset.mask_token_id
-        self.pad_token_id = self.full_dataset.pad_token_id
-        self.max_length = self.full_dataset.max_length
         self.length_pool = self.full_dataset.token_lengths
 
     def decode(self, ids, skip_special_tokens=True):

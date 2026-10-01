@@ -1,7 +1,12 @@
 import re
 import pandas as pd
 import io
+import os
 from collections import Counter
+
+_XH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "xh")
+XH_VOCAB = os.path.join(_XH, "vocab", "safe_vocab.csv")
+XH_CORPUS = os.path.join(_XH, "corpus", "modified_amp_safe.csv")
 
 
 TOKENIZER_PATTERN = re.compile(r'\[[^\]]+\]|%\(\d+\)|%\d{2}|[0-9\.\(\)]|[^%0-9\.\(\)\[\]]+')
@@ -12,7 +17,7 @@ class OrthogonalSafeTokenizer:
     def __init__(self, appearance_number=None):
         self.vocab_counter = Counter()
         # preset fixed topology symbols that are always included in the vocabulary
-        self.topo_symbols = {'.', '(', ')', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
+        self.topo_symbols = {'.', '(', ')', '%', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
         self.appearance_number = appearance_number
         self.breakdown_map = {}
         self.decomp_pool_sorted = []
@@ -222,7 +227,7 @@ class OrthogonalSafeTokenizer:
     def get_vocabulary(self):
         return [token for token, freq in self.vocab_counter.most_common()]
 
-    def save_csv(self, filepath="tokenizer_vocab.csv"):
+    def save_csv(self, filepath=XH_VOCAB):
         """Save the tokenizer vocabulary, IDs, types, and frequencies to a readable CSV file."""
         records = []
         special_set = set(self.SPECIAL_TOKENS)
@@ -248,7 +253,7 @@ class OrthogonalSafeTokenizer:
         print(f"Saved vocabulary ({len(df)} tokens) to '{filepath}'.")
 
     @classmethod
-    def load_csv(cls, filepath="tokenizer_vocab.csv"):
+    def load_csv(cls, filepath=XH_VOCAB):
         """Load tokenizer from a CSV file, preserving exact token IDs."""
         df = pd.read_csv(filepath, keep_default_na=False)
         tokenizer = cls()
@@ -285,7 +290,7 @@ class OrthogonalSafeTokenizer:
 if __name__ == "__main__":
     import os
 
-    csv_data = "molecular_dataset/dataset/data/safe/modified_amp_safe.csv"
+    csv_data = XH_CORPUS
 
     print("=== Step 1: Fitting OrthogonalSafeTokenizer ===")
     df = pd.read_csv(csv_data)
@@ -303,7 +308,7 @@ if __name__ == "__main__":
     print(f"Chemistry Tokens ({len(chem_tokens)}): Top 10 = {chem_tokens[:10]}")
 
     print("\n=== Step 2: Saving Tokenizer to CSV ===")
-    csv_file_path = "tokenizer_vocab_modified.csv"
+    csv_file_path = XH_VOCAB
     tokenizer.save_csv(csv_file_path)
 
     print("\n=== Step 3: Loading Tokenizer from CSV & Verifying Fixed IDs ===")

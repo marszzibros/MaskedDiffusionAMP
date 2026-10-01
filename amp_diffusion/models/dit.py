@@ -1,9 +1,28 @@
 import math
 import typing
 
-import flash_attn
-import flash_attn.layers.rotary
-from flash_attn.bert_padding import pad_input, unpad_input
+# flash-attn is OPTIONAL, so that `import amp_diffusion` works in an
+# environment without it. The error is re-raised at model construction if the
+# fa2 backend is actually asked for.
+#
+# On Blackwell (sm_120 -- the RTX PRO 6000), note carefully that the LIBRARY is
+# not the problem: flash-attn 2.x has emitted sm_120 kernels since v2.7.3. What
+# matters is the CUDA toolkit the WHEEL was built with -- setup.py only emits
+# sm_100/sm_120 gencode under toolkit >= 12.8 and silently skips it otherwise.
+# The cu126 wheel this repo pinned therefore contains sm_80/sm_90 cubins and an
+# empty PTX section, and dies with "no kernel image is available for execution
+# on the device" at the first kernel launch. The cu130 build of the very same
+# flash-attn version carries sm_120.
+#
+# This try/except also catches the mismatched-wheel case, which raises
+# ImportError on an undefined symbol rather than failing at install (see README).
+try:
+  import flash_attn
+  import flash_attn.layers.rotary
+  _FLASH_ATTN_IMPORT_ERROR = None
+except ImportError as _e:                                      # pragma: no cover
+  flash_attn = None
+  _FLASH_ATTN_IMPORT_ERROR = _e
 import huggingface_hub
 
 import torch
@@ -104,6 +123,104 @@ def apply_rotary_pos_emb(qkv, cos, sin):
   cos = cos[0,:,0,0,:cos.shape[-1]//2]
   sin = sin[0,:,0,0,:sin.shape[-1]//2]
   return flash_attn.layers.rotary.apply_rotary_emb_qkv_(qkv, cos, sin)
+
+
+def apply_rotary_pos_emb_torch(qkv, cos, sin):
+  """Pure-torch equivalent of apply_rotary_pos_emb, for the sdpa backend.
+
+  Matches the flash kernel exactly: full head_dim rotary in the half-split
+  (GPT-NeoX, non-interleaved) convention, applied to Q and K only, V untouched.
+
+  Rotary.forward already builds cos/sin as cat((freqs, freqs)) over the whole
+  head_dim, which IS the layout rotate_half expects, so the full width is used
+  directly here. The flash helper is handed the half-width slice only because
+  its kernel re-duplicates it internally -- the two are the same numbers.
+
+  Unlike the flash version this is out-of-place, costing one extra
+  (B, S, 3, H, D) allocation per block -- the price of needing no flash-attn.
+  """
+  c = cos[0, :, 0, 0, :][None, :, None, :]        # (1, S, 1, D)
+  s = sin[0, :, 0, 0, :][None, :, None, :]
+  q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]      # each (B, S, H, D)
+  q = q * c + rotate_half(q) * s
+  k = k * c + rotate_half(k) * s
+  return torch.stack((q, k, v), dim=2)
+
+
+ATTN_BACKENDS = ('fa2', 'sdpa', 'auto')
+
+_fa2_probe_cache = {}
+
+
+def flash_attn_kernel_available():
+  """Does the installed flash-attn have kernels for THIS device? Probe, cached.
+
+  This cannot be answered from the compute capability, and it cannot be
+  answered from the flash-attn version either. Both were tried and both are
+  wrong: support depends on which CUDA toolkit the wheel was compiled with, so
+  two wheels reporting the same flash_attn.__version__ differ in which cubins
+  they carry. The only honest test is to launch a kernel.
+
+  Importing flash-attn tells you nothing here -- on a device with no matching
+  cubin the import succeeds, the model builds, and the failure lands on the
+  first attention call inside the training loop. scripts/train.sh already
+  guards against that by firing a real kernel up front; this is the same idea,
+  reusable from Python.
+
+  Two caveats, both reasons this is only reached from attn_backend='auto' and
+  never from an explicit backend:
+    * It allocates, so it initialises a CUDA context. Under DDP, model
+      construction happens before Lightning assigns each rank its device, so
+      every rank would probe cuda:0 and pin a context there. The result is
+      cached per compute capability, which keeps the ANSWER right (ranks share a
+      GPU model), but on multi-GPU prefer an explicit 'fa2' or 'sdpa'.
+    * head_dim 64 is probed, not the model's real head_dim. That is the usual
+      supported case; an exotic head_dim could in principle pass the probe and
+      still fail for real, which the call site in _attn_varlen_fa2 reports.
+  """
+  if flash_attn is None or not torch.cuda.is_available():
+    return False
+  cap = torch.cuda.get_device_capability()
+  if cap not in _fa2_probe_cache:
+    try:
+      qkv = torch.zeros(1, 8, 3, 1, 64, device='cuda', dtype=torch.bfloat16)
+      flash_attn.flash_attn_qkvpacked_func(qkv)
+      torch.cuda.synchronize()
+      _fa2_probe_cache[cap] = True
+    except Exception:
+      # wrong-arch cubin, ABI mismatch, unsupported head_dim -- all mean
+      # "do not use this backend", and none of them should be fatal here.
+      _fa2_probe_cache[cap] = False
+  return _fa2_probe_cache[cap]
+
+
+def resolve_attn_backend(backend):
+  """Map an attn_backend setting onto a concrete kernel choice.
+
+  An explicit 'fa2' or 'sdpa' is honoured as given and never silently
+  downgraded: an H200 run and an RTX PRO 6000 run that quietly used different
+  kernels would be very hard to notice afterwards. Only 'auto' probes, and it
+  says which way it went.
+  """
+  if backend not in ATTN_BACKENDS:
+    raise ValueError(
+      f"attn_backend must be one of {ATTN_BACKENDS}, got {backend!r}")
+
+  if backend == 'auto':
+    chosen = 'fa2' if flash_attn_kernel_available() else 'sdpa'
+    cap = (torch.cuda.get_device_capability()
+           if torch.cuda.is_available() else None)
+    print(f"[attn] auto -> {chosen}"
+          + (f" (device sm_{cap[0]}{cap[1]})" if cap else " (no CUDA device)"))
+    return chosen
+
+  if backend == 'fa2' and flash_attn is None:
+    raise ImportError(
+      "attn_backend='fa2' needs flash-attn, which failed to import: "
+      f"{_FLASH_ATTN_IMPORT_ERROR}. Either install a wheel matching this "
+      "torch/CUDA/python triple (see README), or use attn_backend='sdpa', "
+      "which needs no flash-attn at all.")
+  return backend
 
 # function overload
 def modulate(x, shift, scale):
@@ -214,9 +331,10 @@ class VectorEmbedder(nn.Module):
 #################################################################################
 
 class Attention(nn.Module):
-  def __init__(self, dim, n_heads, dropout, mlp_ratio=4,):
+  def __init__(self, dim, n_heads, dropout, mlp_ratio=4, attn_backend='fa2'):
     super().__init__()
     self.n_heads = n_heads
+    self.attn_backend = resolve_attn_backend(attn_backend)
 
     self.norm = LayerNorm(dim)
 
@@ -240,6 +358,93 @@ class Attention(nn.Module):
     else:
       return bias_dropout_add_scale_fused_inference
 
+  def _attn_varlen_fa2(self, qkv, seqlens, device, B, L, H, D):
+    """Packed variable-length attention through flash-attn.
+
+    Unchanged from the original implementation, so fa2 runs stay bit-for-bit
+    reproducible against every checkpoint trained before the backend switch
+    existed. Requires a flash-attn wheel carrying cubins for the running
+    device's arch -- see the import note at the top of this file.
+    """
+    qkv = rearrange(qkv, 'b s c h d -> b s (c h d)')
+
+    # create masks for attending only "valid" tokens
+    valid_mask = torch.arange(L, device=qkv.device)[None, :] < seqlens[:, None]
+    valid_indices = valid_mask.flatten().nonzero(as_tuple=False).squeeze(-1)
+
+    qkv = qkv.flatten(0,1)[valid_indices].view(-1, 3, H, D)
+
+    cu_seqlens = torch.cat((
+        torch.tensor([0], device=device, dtype=torch.int32),
+        seqlens.to(dtype=torch.int32)
+    )).cumsum(dim=0, dtype=torch.int32)
+
+    try:
+      x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
+          qkv, cu_seqlens, L, 0., causal=False)
+    except RuntimeError as e:
+      # A wrong-arch wheel gets past `import flash_attn` and past model
+      # construction, and surfaces only here, at the first launch, as a bare
+      # "no kernel image is available for execution on the device". Nothing in
+      # that message mentions the wheel, the backend flag, or the fix -- so say
+      # it. The try costs nothing when no exception is raised (3.11+).
+      cap = (torch.cuda.get_device_capability()
+             if torch.cuda.is_available() else None)
+      raise RuntimeError(
+        f"flash-attn's kernel failed"
+        + (f" on sm_{cap[0]}{cap[1]}" if cap else "") + f": {e}\n"
+        "If that says 'no kernel image is available for execution on the "
+        "device', the installed flash-attn wheel carries no cubin for this GPU. "
+        "flash-attn 2.x DOES support sm_120 (Blackwell), but only when built "
+        "with CUDA >= 12.8 -- the pinned cu126 wheel is not. Fix by either:\n"
+        "  - building an environment whose torch and flash-attn wheels carry this GPU's architecture\n"
+        "  - or running with attn_backend='sdpa', which needs no flash-attn."
+      ) from e
+
+    # apply masks
+    out_padded = torch.zeros(B * L, H, D, device=x.device, dtype=x.dtype)
+    out_padded[valid_indices] = x
+
+    # rearrange it back
+    return rearrange(out_padded.view(B, L, H, D), 'b s h d -> b s (h d)')
+
+  def _attn_padded_sdpa(self, qkv, seqlens, B, L, H, D):
+    """Dense padded attention via SDPA -- the Blackwell-capable path.
+
+    SDPA has no varlen/cu_seqlens API, so attention runs at the padded width
+    with a key-padding mask rather than on a packed batch. Same numbers as the
+    varlen path at every valid position; it just also computes pad rows and
+    throws them away.
+
+    Two traps worth keeping in mind before touching this:
+
+      * The mask is key-side only, and BOOL. An additive -inf mask would leave
+        pad *query* rows fully masked, and a softmax over an all--inf row is
+        NaN, which then spreads through the residual into every token. Masking
+        keys only means even a pad query row still has valid keys to attend to,
+        so nothing degenerates.
+      * The varlen path leaves pad positions as exact zeros and the residual
+        path downstream relies on it, so they are zeroed explicitly here.
+
+    softmax_scale is left default in both paths and agrees: flash-attn and SDPA
+    both use 1/sqrt(head_dim).
+    """
+    valid_mask = torch.arange(L, device=qkv.device)[None, :] < seqlens[:, None]
+
+    # (B, S, H, D) -> (B, H, S, D), the layout SDPA expects
+    q, k, v = (t.transpose(1, 2)
+               for t in (qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]))
+
+    x = F.scaled_dot_product_attention(
+        q, k, v,
+        attn_mask=valid_mask[:, None, None, :],
+        dropout_p=0.,
+        is_causal=False)
+
+    x = x.transpose(1, 2)                                    # (B, S, H, D)
+    x = x * valid_mask[:, :, None, None].to(x.dtype)
+    return rearrange(x, 'b s h d -> b s (h d)')
+
   def forward(self, x, rotary_cos_sin, seqlens, adaLN_parm):
     x_skip = x
     bias_dropout_scale_fn = self._get_bias_dropout_scale()
@@ -254,30 +459,13 @@ class Attention(nn.Module):
 
     # apply rotary pos embedding
     cos, sin = rotary_cos_sin
-    
-    qkv = apply_rotary_pos_emb(qkv, cos.to(qkv.dtype), sin.to(qkv.dtype))  
-    qkv = rearrange(qkv, 'b s c h d -> b s (c h d)')
-    
-    # create masks for attending only "valid" tokens 
-    valid_mask = torch.arange(L, device=qkv.device)[None, :] < seqlens[:, None]  
-    valid_indices = valid_mask.flatten().nonzero(as_tuple=False).squeeze(-1)
 
-    qkv = qkv.flatten(0,1)[valid_indices].view(-1, 3, H, D)
-
-    cu_seqlens = torch.cat((
-        torch.tensor([0], device=x.device, dtype=torch.int32),
-        seqlens.to(dtype=torch.int32)
-    )).cumsum(dim=0, dtype=torch.int32)
-
-    x = flash_attn.flash_attn_interface.flash_attn_varlen_qkvpacked_func(
-        qkv, cu_seqlens, L, 0., causal=False)
-    
-    # apply masks
-    out_padded = torch.zeros(B * L, H, D, device=x.device, dtype=x.dtype)
-    out_padded[valid_indices] = x
-
-    # rearrange it back
-    x = rearrange(out_padded.view(B, L, H, D), 'b s h d -> b s (h d)')
+    if self.attn_backend == 'fa2':
+      qkv = apply_rotary_pos_emb(qkv, cos.to(qkv.dtype), sin.to(qkv.dtype))
+      x = self._attn_varlen_fa2(qkv, seqlens, x.device, B, L, H, D)
+    else:
+      qkv = apply_rotary_pos_emb_torch(qkv, cos.to(qkv.dtype), sin.to(qkv.dtype))
+      x = self._attn_padded_sdpa(qkv, seqlens, B, L, H, D)
 
     x = bias_dropout_scale_fn(self.attn_out(x),
                               None,
@@ -293,10 +481,11 @@ class Attention(nn.Module):
     return x
 
 class DDiTBlock(nn.Module):
-  def __init__(self, dim, n_heads, cond_dim, dropout=0.1):
+  def __init__(self, dim, n_heads, cond_dim, dropout=0.1, attn_backend='fa2'):
     super().__init__()
 
-    self.attn_seqs = Attention(dim=dim, n_heads=n_heads, dropout=dropout, mlp_ratio=4)
+    self.attn_seqs = Attention(dim=dim, n_heads=n_heads, dropout=dropout,
+                               mlp_ratio=4, attn_backend=attn_backend)
 
     self.dropout = dropout
 
@@ -369,11 +558,19 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
                # Updated Condition Dimensions
                species_dim = 6,  # 6 different species (Binary)
                groups_dim = 5,   # 5 different groups (Binary)
-               mic_dim = 10):    # 10 mic values (One-Hot)
+               mic_dim = 10,     # 10 mic values (One-Hot)
+               # 'fa2'  packed varlen flash-attn. Needs a wheel built for the
+               #        device's arch -- on Blackwell that means a cu130 (or
+               #        newer) build, not the cu126 one.
+               # 'sdpa' dense padded torch SDPA. Needs no flash-attn at all,
+               #        so it runs anywhere torch does, Blackwell included.
+               # 'auto' probe a real kernel and pick; prints which it took.
+               attn_backend = 'fa2'):
     super().__init__()
 
     self.vocab_size = vocab_size
     self.seq_length = seq_length
+    self.attn_backend = resolve_attn_backend(attn_backend)
 
     self.seqs_embed = EmbeddingLayer(hidden_size, vocab_size)
     self.sigma_map = TimestepEmbedder(cond_dim)
@@ -387,7 +584,8 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
 
     blocks = []
     for _ in range(n_blocks):
-      blocks.append(DDiTBlock(hidden_size, n_heads, cond_dim, dropout=dropout))
+      blocks.append(DDiTBlock(hidden_size, n_heads, cond_dim, dropout=dropout,
+                              attn_backend=self.attn_backend))
     self.blocks = nn.ModuleList(blocks)
     
     self.output_layer = DDitFinalLayer(hidden_size, vocab_size, cond_dim, seq_length)
@@ -436,15 +634,3 @@ class DIT(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         x = self.blocks[i](x, rotary_cos_sin, c, seqlens)
       x = self.output_layer(x, c)
     return x
-
-
-if __name__ == "__main__":
-    model = DIT(vocab_size=49,n_heads=8, n_blocks=4).to('cuda')
-    x = torch.randint(0, 49, (2, 66)).to('cuda')
-    sigma = torch.randint(0, 1,(2,)).to('cuda')
-    seqlens = torch.tensor([32,50]).to('cuda')
-    mechanism_ids = torch.randint(0,10,(2,)).to('cuda')
-    target_ids = torch.randint(0,10,(2,)).to('cuda')
-    mic_ids = torch.randint(0,20,(2,)).to('cuda')
-    out = model(x, sigma, seqlens, mechanism_ids, target_ids, mic_ids)
-    print(out.shape)

@@ -1,7 +1,7 @@
 [project]
-name = "masked-diffusion-amp"
+name = "amide-brics-pipeline"
 version = "0.1.0"
-description = "Conditional discrete flow matching for antimicrobial peptide design."
+description = "amide_brics SAFE fragmentation and masked discrete flow matching for antimicrobial peptides."
 requires-python = ">=3.12"
 
 dependencies = [
@@ -13,7 +13,7 @@ dependencies = [
     "wandb>=0.18",
     "biopython>=1.84",
     "tqdm>=4.66",
-    # --- dataset pipeline (mirrors molecular_dataset/pyproject.toml) ---
+    # --- dataset pipeline ---
     "requests>=2.34",
     "numpy>=2.5",
     "pandas>=3.0",
@@ -27,27 +27,22 @@ dependencies = [
     "transformers>=4.42,<5",
 ]
 
-# flash-attn is installed from a prebuilt wheel matching this exact stack
-# (cu126 / torch 2.13 / cp312) rather than resolved here -- see README.
+# flash-attn is optional and needs a wheel built for the GPU; without it the model runs on sdpa (--attn_backend sdpa).
 [project.optional-dependencies]
 flash = ["flash-attn>=2.7"]
 
-# This repo is a collection of scripts, not an installable package.
+# Run from the repo root (python -m training.train ...). Not built or published as a distribution.
 [tool.uv]
 package = false
 no-build-isolation-package = ["flash-attn"]
 
-# Driver here is 560.35 (RTX 4080), which supports CUDA 12.6 but not 12.8
-# (cu128 wheels need driver >= 570). Pin the cu126 wheel index accordingly.
+# torch from the CUDA 13.0 wheel index: it carries kernels for Blackwell GPUs (RTX PRO 6000, sm_120) and needs a
+# driver that supports CUDA 13 (the VACC nodes load cuda/13.0.2). For an older GPU or driver, e.g. an RTX 4080 on a
+# 560 driver, use cu126 here instead and run `uv lock`.
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu126" }
-
-[tool.uv.workspace]
-members = [
-    "venv",
-]
+torch = { index = "pytorch-cu130" }
