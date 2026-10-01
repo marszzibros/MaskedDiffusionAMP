@@ -1,8 +1,7 @@
-# amide_brics_pipeline
+# AMIDE BRICS
 
-The amide_brics fragmentation for SAFE peptide strings, plus plain train, sample and evaluation scripts for masked
-discrete flow matching with either tokenizer. This folder is self-contained: the code, the data it reads and the
-environment are all inside it. Run everything from this folder.
+The AMIDE BRICS fragmentation for SAFE peptide strings, plus plain train, sample and evaluation scripts for masked
+discrete flow matching with either tokenizer. 
 
 amide_brics cuts one bond per peptide link, the carbonyl-carbon to nitrogen bond, where BRICS also cuts the
 N-C(alpha) bond and leaves each backbone nitrogen as a one-atom fragment. Ring-shaped peptides, which have no
@@ -66,15 +65,6 @@ python -m dataset_build.build --rule brics --order raw     # plain BRICS, raw   
 | `--tokenizer amide --order dfs` | `data/amide_brics/` |
 | `--tokenizer amide --order raw` | `data/amide_brics_raw/` |
 
-**The vocabularies were not all fitted the same way.** The shipped xh vocabulary was fitted with `appearance_number=10`
-(chemistry tokens seen fewer than 10 times are split into commoner ones), and `--rule brics` uses that by default. The
-amide vocabulary was fitted with no threshold, and `--rule amide_brics` keeps that default. On the amide corpus,
-`--appearance_number 10` gives 166 tokens instead of 206. Build both with the same value if you want a like-for-like
-vocabulary comparison.
-
-What a build produces for amide_brics on the 20,522 shipped molecules: 20,504 kept (1,061 of them cut with BRICS because
-they have no cuttable amide), 18 dropped because neither rule can cut them, 206 tokens (5 special, 83 topology, 118
-chemistry), and no unknown token in the first 500 strings.
 
 ## Train and sample
 
