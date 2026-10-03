@@ -17,7 +17,7 @@ class OrthogonalSafeTokenizer:
     def __init__(self, appearance_number=None):
         self.vocab_counter = Counter()
         # preset fixed topology symbols that are always included in the vocabulary
-        self.topo_symbols = {'.', '(', ')', '%', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
+        self.topo_symbols = {'.', '(', ')', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
         self.appearance_number = appearance_number
         self.breakdown_map = {}
         self.decomp_pool_sorted = []

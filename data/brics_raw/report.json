@@ -11,10 +11,10 @@
     }
   },
   "vocab": {
-    "vocab_size": 179,
+    "vocab_size": 178,
     "type_counts": {
-      "topology": 104,
-      "chemistry": 70,
+      "topology": 102,
+      "chemistry": 71,
       "special": 5
     },
     "unk_in_500": 0,

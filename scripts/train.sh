@@ -19,6 +19,7 @@ VENV=${VENV:-.venv}                           # made once on the login node: uv 
 ATTN=${ATTN:-auto}                            # auto: flash-attn if it runs on this GPU, else sdpa
 STEPS=${STEPS:-100 500}                       # the sweep
 ETAS=${ETAS:-0 1 2 5 10 50}
+GRAMMAR=${GRAMMAR:-on off}                    # the t=0.5 SAFE grammar repair; "on off" measures its effect
 N=${N:-256}                                   # samples per cell
 OUT_ROOT=${OUT_ROOT:-output}
 RUN=$OUT_ROOT/${TOKENIZER}_${ORDER}_${SCHEDULE}
@@ -48,13 +49,17 @@ fi
 mkdir -p "$RUN/sweep"
 for steps in $STEPS; do
     for eta in $ETAS; do
-        cell="$RUN/sweep/steps${steps}_eta${eta}"
+      for g in $GRAMMAR; do
+        # same checkpoint, same seed: the only difference between the two grammar cells is the repair itself
+        if [ "$g" = off ]; then g_flags="--no_grammar_check"; suffix="_nogrammar"; else g_flags=""; suffix=""; fi
+        cell="$RUN/sweep/steps${steps}_eta${eta}${suffix}"
         [ -f "$cell.txt" ] && continue
         if [ "$SCHEDULE" = two ]; then eta_flags="--topo_eta $eta"; else eta_flags="--topo_eta $eta --chem_eta $eta --base_eta $eta"; fi
         python -m training.sample \
             --checkpoint_path "$RUN/model-final.ckpt" --num_samples "$N" --batch_size 64 \
-            --steps "$steps" $eta_flags --seed 0 --attn_backend "$ATTN" --output_file "$cell.csv"
+            --steps "$steps" $eta_flags $g_flags --seed 0 --attn_backend "$ATTN" --output_file "$cell.csv"
         python evaluation/run.py "$cell.csv" > "$cell.txt"
+      done
     done
 done
 

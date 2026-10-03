@@ -55,6 +55,8 @@ def main():
     ap.add_argument("--mic", type=int, default=2, help="MIC bin; each sample uses this bin or a neighbour")
     ap.add_argument("--tokenizer", choices=variants.VARIANTS, default=None, help="default: from model_config.json")
     ap.add_argument("--order", choices=variants.ORDERS, default=None, help="default: from model_config.json")
+    ap.add_argument("--no_grammar_check", action="store_true",
+                    help="turn off the one-shot SAFE grammar repair at t=0.5")
     args = ap.parse_args()
 
     if args.seed is not None:
@@ -75,8 +77,6 @@ def main():
         raise SystemExit(f"{v.name}/{v.order} has {len(decoder.token_dict)} tokens but the checkpoint was trained on "
                          f"{model.hparams.num_tokens}: wrong --tokenizer or --order")
     length_pool = decoder.length_pool(v.corpus_csv)       # generation lengths are drawn from the corpus
-    print(f"{device}, {v.name}/{v.order} labels, vocab {len(decoder.token_dict)}, {args.steps} steps")
-
     os.makedirs(os.path.dirname(os.path.abspath(args.output_file)), exist_ok=True)
     n_valid = 0
     with open(args.output_file, "w", newline="") as f, torch.no_grad():
@@ -92,7 +92,8 @@ def main():
                 conditions={"species": args.species, "groups": args.groups, "mic": mic},
                 scales={"species": 1.0, "groups": 1.0, "mic": 1.0},
                 num_samples=n, max_length=model.hparams.max_length,
-                length_pool=length_pool, decode_fn=decoder.decode)
+                length_pool=length_pool, decode_fn=decoder.decode,
+                use_grammar_check=not args.no_grammar_check)
             for seq in seqs:
                 smiles = decoder.smiles_from_safe(seq)
                 n_valid += smiles is not None

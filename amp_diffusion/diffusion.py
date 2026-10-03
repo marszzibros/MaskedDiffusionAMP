@@ -297,8 +297,80 @@ class DiscreteFlowMatching(L.LightningModule):
             
         return out_vec
 
+    def _get_grammar_tokens(self, tokens_dict):
+        import re
+        linkage_token_ids = set()
+        open_paren_id = None
+        close_paren_id = None
+        for token_str, token_id in tokens_dict.items():
+            if re.match(r'^([1-9]|%\d{2}|%\(\d+\))$', str(token_str)):
+                linkage_token_ids.add(token_id)
+            elif token_str == '(':
+                open_paren_id = token_id
+            elif token_str == ')':
+                close_paren_id = token_id
+        return open_paren_id, close_paren_id, linkage_token_ids
+
+    def _check_and_mask_grammar(self, seq_tensor, length_tensor, open_paren_id, close_paren_id, linkage_token_ids):
+        B, L = seq_tensor.shape
+        batch_invalid_mask = torch.zeros_like(seq_tensor, dtype=torch.bool)
+        any_invalid = False
+        
+        seq_np = seq_tensor.cpu().numpy()
+        len_np = length_tensor.cpu().numpy()
+        
+        for i in range(B):
+            seq = seq_np[i, :len_np[i]]
+            
+            # 1. Check parentheses
+            stack = []
+            invalid_parens = []
+            for j, token_id in enumerate(seq):
+                if token_id == open_paren_id:
+                    stack.append(j)
+                elif token_id == close_paren_id:
+                    if len(stack) > 0:
+                        stack.pop()
+                    else:
+                        invalid_parens.append(j)
+            invalid_parens.extend(stack)
+            
+            for j in invalid_parens:
+                batch_invalid_mask[i, j] = True
+                any_invalid = True
+                
+            # 2. Check linkages
+            token_counts = {}
+            token_positions = {}
+            for j, token_id in enumerate(seq):
+                if token_id in linkage_token_ids:
+                    token_counts[token_id] = token_counts.get(token_id, 0) + 1
+                    if token_id not in token_positions:
+                        token_positions[token_id] = []
+                    token_positions[token_id].append(j)
+            
+            unpaired_positions = []
+            for token_id, count in token_counts.items():
+                if count % 2 != 0:
+                    unpaired_positions.append(token_positions[token_id][-1])
+            
+            # Pair up excess linkages to keep fragments connected
+            while len(unpaired_positions) >= 2:
+                pos1 = unpaired_positions.pop()
+                pos2 = unpaired_positions.pop()
+                # Make pos2 the same linkage as pos1
+                seq_tensor[i, pos2] = seq_tensor[i, pos1]
+                
+            # If one remains, we have to mask it
+            if len(unpaired_positions) == 1:
+                j = unpaired_positions[0]
+                batch_invalid_mask[i, j] = True
+                any_invalid = True
+                        
+        return batch_invalid_mask, any_invalid
+
     @torch.no_grad()
-    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=None, temperature=1.0, shortest_length=14, longest_length=36, length_pool=None, decode_fn=None, topo_noise_scale=1.0, chem_noise_scale=1.0, base_noise_scale=1.0):
+    def generate_sample(self, tokens_dict, conditions, scales, num_samples=5, max_length=None, temperature=1.0, shortest_length=14, longest_length=36, length_pool=None, decode_fn=None, topo_noise_scale=1.0, chem_noise_scale=1.0, base_noise_scale=1.0, use_grammar_check=True):
         """
         max_length:  defaults to the trained max_length from hparams. Never
                      hardcode it -- a too-small value silently yields stubs.
@@ -360,8 +432,20 @@ class DiscreteFlowMatching(L.LightningModule):
             dt = 1.0 / steps
             
             index_to_token = {i: token for token, i in tokens_dict.items()}
-            
+
+            has_crossed_half = False
+
+            if use_grammar_check:
+                open_paren_id, close_paren_id, linkage_token_ids = self._get_grammar_tokens(tokens_dict)
+
             for step in range(steps):
+                if use_grammar_check and t >= 0.5 and not has_crossed_half:
+                    has_crossed_half = True
+                    invalid_mask, any_invalid = self._check_and_mask_grammar(x, lengths, open_paren_id, close_paren_id, linkage_token_ids)
+                    if any_invalid:
+                        # Hard fix: mask the unmatched topological tokens and keep sampling forward.
+                        x = torch.where(invalid_mask, torch.tensor(self.mask_token_id, device=device), x)
+
                 t_tensor = torch.full((num_samples,), t, device=device)
                 
                 # --- 4-PASS COMPOSITIONAL GUIDANCE ---
@@ -425,10 +509,10 @@ class DiscreteFlowMatching(L.LightningModule):
                 if self.pad_token_id is not None:
                     logits[:, :, self.pad_token_id] = -float('inf')
 
-                # logits[:, :, 1] = -float('inf')  # Prevent sampling the CLS token
-                # logits[:, :, 2] = -float('inf')  # Prevent sampling the SEP token
-                # logits[:, :, 4] = -float('inf')  # Prevent sampling the UNK token
-                
+                # Lock topological tokens from being sampled after their schedule ends
+                if t >= 0.5:
+                    logits[:, :, self.topo_ids] = -float('inf')
+
                 x1_probs = F.softmax(logits, dim=-1)
                 
                 x1_sample = Categorical(x1_probs).sample()
@@ -474,9 +558,14 @@ class DiscreteFlowMatching(L.LightningModule):
                 unmask_noise_scale = torch.where(is_pred_topo, torch.full_like(unmask_noise_scale, topo_noise_scale), unmask_noise_scale)
                 unmask_noise_scale = torch.where(is_pred_chem, torch.full_like(unmask_noise_scale, chem_noise_scale), unmask_noise_scale)
                 
+                # Token-specific schedule decay (Topo decays to 0 at t=0.5)
+                topo_decay = max(0.0, 0.5 - t)
+                unmask_decay = torch.full_like(x.float(), 1.0 - t)
+                unmask_decay = torch.where(is_pred_topo, torch.full_like(unmask_decay, topo_decay), unmask_decay)
+
                 # For unmasking, use confidence of the predicted token
                 pred_probs = x1_probs.gather(dim=-1, index=x1_sample.unsqueeze(-1)).squeeze(-1)
-                pred_conf = torch.log(pred_probs + 1e-9) + gumbel_noise * unmask_noise_scale * (1.0 - t)
+                pred_conf = torch.log(pred_probs + 1e-9) + gumbel_noise * unmask_noise_scale * unmask_decay
                 
                 def get_topk_mask(mask_group, num_to_select, conf):
                     group_conf = torch.where(mask_group, conf, torch.full_like(conf, -float('inf')))
@@ -548,12 +637,17 @@ class DiscreteFlowMatching(L.LightningModule):
                     remask_noise_scale = torch.where(is_curr_topo, torch.full_like(remask_noise_scale, topo_noise_scale), remask_noise_scale)
                     remask_noise_scale = torch.where(is_curr_chem, torch.full_like(remask_noise_scale, chem_noise_scale), remask_noise_scale)
 
+                    # Token-specific schedule decay
+                    topo_decay = max(0.0, 0.5 - t)
+                    remask_decay = torch.full_like(x.float(), 1.0 - t)
+                    remask_decay = torch.where(is_curr_topo, torch.full_like(remask_decay, topo_decay), remask_decay)
+
                     # For remasking, use confidence of the CURRENTLY REVEALED token
                     safe_x = torch.where(x == self.mask_token_id, torch.zeros_like(x), x)
                     if self.pad_token_id is not None:
                         safe_x = torch.where(safe_x == self.pad_token_id, torch.zeros_like(safe_x), safe_x)
                     curr_probs = x1_probs.gather(dim=-1, index=safe_x.unsqueeze(-1)).squeeze(-1)
-                    curr_conf = torch.log(curr_probs + 1e-9) + gumbel_noise * remask_noise_scale * (1.0 - t)
+                    curr_conf = torch.log(curr_probs + 1e-9) + gumbel_noise * remask_noise_scale * remask_decay
                     
                     # Remask the LEAST confident tokens, so we pass -curr_conf
                     should_remask_topo = get_topk_mask(is_revealed_topo, num_remask_topo, -curr_conf)
