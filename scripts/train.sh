@@ -9,7 +9,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=16
-#SBATCH --time=23:59:59
+#SBATCH --time=1-23:59:59
 #SBATCH --job-name=AMP_amide
 
 set -e

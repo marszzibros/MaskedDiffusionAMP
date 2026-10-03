@@ -16,7 +16,7 @@ import os
 import lightning as L
 import numpy as np
 from lightning.pytorch.callbacks import LearningRateMonitor
-from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.loggers import CSVLogger, WandbLogger
 
 from amp_diffusion import AMPSafeDataModule, DiscreteFlowMatching, ForceSaveCallback
 
@@ -40,6 +40,9 @@ def parse_args():
     ap.add_argument("--limit_train_batches", type=float, default=None, help="Lightning's cap per epoch, for smoke tests")
     ap.add_argument("--attn_backend", choices=("fa2", "sdpa", "auto"), default="fa2",
                     help="fa2 = flash-attn (needs a wheel built for this GPU); sdpa = pure torch; auto = probe and pick")
+    ap.add_argument("--wandb", action="store_true", default=True)
+    ap.add_argument("--no_wandb", dest="wandb", action="store_false", help="CSV logging only")
+    ap.add_argument("--wandb_project", default="AMP_Mask_Diffusion")
     ap.add_argument("--smoke", action="store_true", help="2 epochs, 4 batches, 2 samples")
     ap.add_argument("--out_root", default="output")
     ap.add_argument("--out_dir", default=None, help="the run directory itself, instead of <out_root>/<timestamp>-<tag>")
@@ -117,9 +120,21 @@ def main():
         lim = args.limit_train_batches
         trainer_kwargs["limit_train_batches"] = int(lim) if lim >= 1 else lim
 
+    loggers = [CSVLogger(save_dir=output_dir, name="", version="")]
+    if args.wandb:
+        loggers.append(WandbLogger(
+            project=args.wandb_project,
+            name=f"{tag}-{os.path.basename(output_dir)}",
+            save_dir=output_dir,
+            tags=[args.tokenizer, args.order, args.schedule],
+            config={**{k: v for k, v in model_config.items() if k != "output_dir"},
+                    "tokenizer": args.tokenizer, "order": args.order, "schedule": args.schedule,
+                    "vocab_path": variant.vocab_path},
+        ))
+
     trainer = L.Trainer(
         max_epochs=model_config["num_epochs"],
-        logger=CSVLogger(save_dir=output_dir, name="", version=""),
+        logger=loggers,
         callbacks=[ForceSaveCallback(dirpath=output_dir, every_n_epochs=args.save_every),
                    LearningRateMonitor(logging_interval="step")],
         **trainer_kwargs,
