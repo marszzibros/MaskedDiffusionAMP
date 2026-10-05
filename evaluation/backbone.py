@@ -1,8 +1,6 @@
 """
 Peptide backbone rate: how many samples carry an intact run of amino-acid residues.
 """
-from functools import lru_cache
-
 from rdkit import Chem
 
 # N-C(alpha)-C(=O): an sp3 carbon between a three-connected nitrogen and a carbonyl carbon (proline's ring N matches too)
@@ -20,15 +18,17 @@ def backbone_length(mol):
             if nb.GetIdx() in by_n and nb.GetIdx() != n:
                 nxt[(n, c)] = by_n[nb.GetIdx()]
 
-    @lru_cache(maxsize=None)
-    def run(res):
-        # a run cannot loop: a ring of residues would make the recursion infinite
-        return 1 + (run(nxt[res]) if res in nxt and nxt[res] != res else 0)
-
-    try:
-        return max((run(r) for r in residues), default=0)
-    except RecursionError:      # a head-to-tail cyclic peptide has no start; count its residues
-        return len(residues)
+    # Follow the links from each residue until the run ends or comes back to a residue it has already seen. A head-to-tail
+    # cyclic peptide has no start and counts as the residues of its ring; a stray two-residue ring beside a chain adds nothing
+    # to the chain (the old shortcut returned the molecule's whole residue count whenever any ring existed).
+    longest = 0
+    for start in residues:
+        seen, cur = set(), start
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            cur = nxt.get(cur)
+        longest = max(longest, len(seen))
+    return longest
 
 
 def backbone(samples, min_residues=5):

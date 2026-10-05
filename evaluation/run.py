@@ -5,6 +5,8 @@
 validity    share of samples that decode to a molecule
 novelty     share of valid samples that are not in the training corpus
 backbone    share of valid samples with at least 5 peptide-bonded residues in a row
+connected   share of all samples that decode to one connected molecule
+strict      share of all samples that are connected, have that backbone and no N-N or C(=O)-C(=O) bond
 fragments   SAFE fragments per sample, mean and median
 """
 import os
@@ -13,9 +15,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))     # the metric files sit beside this one
 
 from backbone import backbone                                # noqa: E402
+from connectivity import connected                           # noqa: E402
 from fragments import mean_fragments, median_fragments       # noqa: E402
 from loading import load_reference, load_samples             # noqa: E402
 from novelty import novelty                                  # noqa: E402
+from strict import strict                                    # noqa: E402
 from validity import validity                                # noqa: E402
 
 
@@ -29,6 +33,8 @@ def main():
     print(f"  validity   {validity(samples):.3f}")
     print(f"  novelty    {novelty(samples, load_reference()):.3f}")
     print(f"  backbone   {backbone(samples):.3f}")
+    print(f"  connected  {connected(samples):.3f}")
+    print(f"  strict     {strict(samples):.3f}")
     print(f"  fragments  mean {mean_fragments(samples):.1f}, median {median_fragments(samples):.1f}")
 
 

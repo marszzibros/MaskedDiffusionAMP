@@ -21,6 +21,7 @@ STEPS=${STEPS:-100 500}                       # the sweep
 ETAS=${ETAS:-0 1 2 5 10 50}
 GRAMMAR=${GRAMMAR:-on off}                    # the t=0.5 SAFE grammar repair; "on off" measures its effect
 N=${N:-256}                                   # samples per cell
+SWEEP=${SWEEP:-sweep_matched}                 # results folder inside the run; a new name, so cells sampled under the old eta rule are not skipped
 OUT_ROOT=${OUT_ROOT:-output}
 RUN=$OUT_ROOT/${TOKENIZER}_${ORDER}_${SCHEDULE}
 
@@ -45,16 +46,17 @@ if [ ! -f "$RUN/model-final.ckpt" ]; then
 fi
 
 # ---- sweep: sample each (steps, eta) cell and score it ----
-# "two" schedule: eta moves the topology tokens only. "single": there are no topology tokens, so all three move.
-mkdir -p "$RUN/sweep"
+# Both schedules: eta moves all three token classes (topology, chemistry, base), so a cell means the same noise whichever
+# schedule trained the checkpoint. (Under "single" there are no classes, so only the base eta does anything.)
+mkdir -p "$RUN/$SWEEP"
 for steps in $STEPS; do
     for eta in $ETAS; do
       for g in $GRAMMAR; do
         # same checkpoint, same seed: the only difference between the two grammar cells is the repair itself
         if [ "$g" = off ]; then g_flags="--no_grammar_check"; suffix="_nogrammar"; else g_flags=""; suffix=""; fi
-        cell="$RUN/sweep/steps${steps}_eta${eta}${suffix}"
+        cell="$RUN/$SWEEP/steps${steps}_eta${eta}${suffix}"
         [ -f "$cell.txt" ] && continue
-        if [ "$SCHEDULE" = two ]; then eta_flags="--topo_eta $eta"; else eta_flags="--topo_eta $eta --chem_eta $eta --base_eta $eta"; fi
+        eta_flags="--topo_eta $eta --chem_eta $eta --base_eta $eta"
         python -m training.sample \
             --checkpoint_path "$RUN/model-final.ckpt" --num_samples "$N" --batch_size 64 \
             --steps "$steps" $eta_flags $g_flags --seed 0 --attn_backend "$ATTN" --output_file "$cell.csv"
@@ -64,4 +66,4 @@ for steps in $STEPS; do
 done
 
 echo "== results $(date -Is)"
-for f in "$RUN"/sweep/steps*_eta*.txt; do echo; echo "-- $(basename "$f" .txt)"; tail -n +2 "$f"; done
+for f in "$RUN/$SWEEP"/steps*_eta*.txt; do echo; echo "-- $(basename "$f" .txt)"; tail -n +2 "$f"; done

@@ -81,25 +81,5 @@ python evaluation/run.py results/samples.csv
 `--schedule single` gives the model no token classes, so every token is masked on 1 - t. A run directory holds
 `model_config.json` (it records the tokenizer and order, which `sample.py` reads back), `metrics.csv`,
 `model-epoch_N.ckpt` every `--save_every` epochs and `model-final.ckpt`. `sample.py` writes a `smiles,safe` CSV.
-
-## Evaluation
-
-`python evaluation/run.py results/samples.csv` prints validity, novelty (not in the training corpus), backbone (share of
-valid samples with at least 5 peptide-bonded residues in a row) and SAFE fragments per sample. A residue is
-N-C(alpha)-C(=O); caps on the ends and side chains are not checked, so capped peptides count. The threshold is
-`min_residues` in `evaluation/backbone.py`. Novelty is measured against `data/xh/corpus/`.
-
-## On VACC
-
-```bash
-uv sync                          # once, on the login node
-bash scripts/run.sh                 # submits 8 jobs: tokenizer (xh, amide) x order (dfs, raw) x schedule (two, single)
-```
-
-`run.sh` holds the experiment parameters (epochs, batch size, model size) and calls `sbatch scripts/train.sh <tokenizer>
-<order> <schedule> <epochs> <batch> <hidden> <blocks> <heads>`. Each job trains into `output/<tokenizer>_<order>_<schedule>/`,
-then samples every cell of steps {100, 500} x eta {0, 1, 2, 5, 10, 50} (256 samples each, seed 0) and scores it with
-`evaluation/run.py`; results are `<run>/sweep/steps*_eta*.{csv,txt}` and are printed at the end of the log (`logs/`).
-With the two schedule, eta moves the topology tokens only; with the single schedule all three etas move.
-A finished run is not retrained and finished cells are not resampled, so resubmitting continues the sweep.
-`VENV`, `ATTN`, `STEPS`, `ETAS`, `N` and `OUT_ROOT` can be set in the environment to override the defaults in `train.sh`.
+`--seed` (default 0) seeds torch, numpy and the data order and is recorded in `model_config.json`, so a run can be repeated
+(GPU kernels may still differ in the last digits).

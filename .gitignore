@@ -11,3 +11,5 @@ __pycache__/
 /.venv
 out.csv
 *.gz
+experiments/
+temp/

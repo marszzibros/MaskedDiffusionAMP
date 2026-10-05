@@ -46,11 +46,14 @@ def parse_args():
     ap.add_argument("--smoke", action="store_true", help="2 epochs, 4 batches, 2 samples")
     ap.add_argument("--out_root", default="output")
     ap.add_argument("--out_dir", default=None, help="the run directory itself, instead of <out_root>/<timestamp>-<tag>")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="seeds torch, numpy and the data order, so a run can be repeated (GPU kernels may still differ in the last digits)")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
+    L.seed_everything(args.seed, workers=True)
 
     tag = f"{args.tokenizer}-{args.schedule}" + ("-raw" if args.order == "raw" else "") + ("-smoke" if args.smoke else "")
     output_dir = args.out_dir or os.path.join(
@@ -108,7 +111,7 @@ def main():
 
     with open(os.path.join(output_dir, "model_config.json"), "w") as f:
         json.dump({**model_config, "tokenizer": args.tokenizer, "order": args.order, "schedule": args.schedule,
-                   "vocab_path": variant.vocab_path, "corpus_csv": variant.corpus_csv}, f, indent=4)
+                   "vocab_path": variant.vocab_path, "corpus_csv": variant.corpus_csv, "seed": args.seed}, f, indent=4)
 
     model = DiscreteFlowMatching(**{k: v for k, v in model_config.items() if k != "batch_size"})
 
