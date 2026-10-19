@@ -37,7 +37,10 @@ class DiscreteFlowMatching(L.LightningModule):
                  n_heads=12,
                  # 'fa2' (flash-attn; needs a wheel built for the device arch)
                  # | 'sdpa' (pure torch, runs anywhere) | 'auto' (probe & pick).
-                 attn_backend='fa2'):
+                 attn_backend='fa2',
+                 # 'pooled': one mean over every masked token. 'class_balanced': the mean of the
+                 # per-class means, so a class masked less often is not outweighed.
+                 loss_mode='pooled'):
 
         super().__init__()
         self.save_hyperparameters()
@@ -55,7 +58,11 @@ class DiscreteFlowMatching(L.LightningModule):
         self.chem_eta = chem_eta
         self.base_eta = base_eta
         self.cond_dropout = cond_dropout
-        
+
+        if loss_mode not in ("pooled", "class_balanced"):
+            raise ValueError(f"loss_mode must be 'pooled' or 'class_balanced', not {loss_mode!r}")
+        self.loss_mode = loss_mode
+
         if topology_token_ids is None:
             topology_token_ids = []
         if chemical_token_ids is None:
@@ -201,11 +208,23 @@ class DiscreteFlowMatching(L.LightningModule):
         
         active_loss_mask = mask_mask.float()
         num_masked = active_loss_mask.sum()
-        
-        if num_masked > 0:
+
+        if self.loss_mode == "class_balanced" and num_masked > 0 and self.topo_ids.numel() > 0:
+            # Average the per-class means instead of pooling every masked token. Under the
+            # two-schedule the classes are masked over different windows, so pooling gives the
+            # class that unmasks earlier less of the loss. Measured -0.41 strict in both
+            # tokenizers, so this is available for replication, not recommended.
+            groups = [mask_mask & is_topo, mask_mask & is_chem, mask_mask & ~(is_topo | is_chem)]
+            terms = []
+            for g in groups:
+                n_g = g.sum()
+                if n_g > 0:
+                    terms.append((nll * g.float()).sum() / n_g)
+            loss = sum(terms) / len(terms)
+        elif num_masked > 0:
             loss = (nll * active_loss_mask).sum() / num_masked
         else:
-            loss = nll.sum() * 0.0 
+            loss = nll.sum() * 0.0
 
         loss = loss / self.hparams.accumulate_grad_batches
         self.manual_backward(loss)
@@ -409,7 +428,7 @@ class DiscreteFlowMatching(L.LightningModule):
         # mask_keep (False) -> Use Real Embedding
         mask_drop = torch.ones(num_samples, dtype=torch.bool, device=device)
         mask_keep = torch.zeros(num_samples, dtype=torch.bool, device=device)
-        
+
         try:
             x = torch.full((num_samples, max_length), 
                            self.mask_token_id, 

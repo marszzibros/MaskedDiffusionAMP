@@ -29,6 +29,9 @@ def parse_args():
     ap.add_argument("--schedule", choices=("two", "single"), default="two",
                     help="two: topology tokens masked on a cosine over t in [0, 0.5], chemistry on [0.3, 1.0]. "
                          "single: one linear 1 - t for every token.")
+    ap.add_argument("--loss", choices=("pooled", "class_balanced"), default="pooled",
+                    help="pooled (default): one mean over every masked token. class_balanced: the mean of "
+                         "the per-class means. class_balanced measured -0.41 strict in both tokenizers.")
     ap.add_argument("--epochs", type=int, default=None, help="override num_epochs")
     ap.add_argument("--batch_size", type=int, default=None)
     ap.add_argument("--hidden_size", type=int, default=None)
@@ -55,7 +58,9 @@ def main():
     args = parse_args()
     L.seed_everything(args.seed, workers=True)
 
-    tag = f"{args.tokenizer}-{args.schedule}" + ("-raw" if args.order == "raw" else "") + ("-smoke" if args.smoke else "")
+    tag = (f"{args.tokenizer}-{args.schedule}" + ("-raw" if args.order == "raw" else "")
+           + ("-bal" if args.loss == "class_balanced" else "")
+           + ("-smoke" if args.smoke else ""))
     output_dir = args.out_dir or os.path.join(
         args.out_root, f"{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{tag}")
     os.makedirs(output_dir, exist_ok=True)
@@ -80,6 +85,7 @@ def main():
         "n_blocks": 12,
         "n_heads": 12,
         "attn_backend": args.attn_backend,
+        "loss_mode": args.loss,
     }
     if args.smoke:
         # 2 epochs: ForceSaveCallback skips epoch 0, so a 1-epoch run would never write a checkpoint
@@ -129,7 +135,8 @@ def main():
             project=args.wandb_project,
             name=f"{tag}-{os.path.basename(output_dir)}",
             save_dir=output_dir,
-            tags=[args.tokenizer, args.order, args.schedule],
+            tags=[args.tokenizer, args.order, args.schedule]
+                 + ([args.loss] if args.loss != "pooled" else []),
             config={**{k: v for k, v in model_config.items() if k != "output_dir"},
                     "tokenizer": args.tokenizer, "order": args.order, "schedule": args.schedule,
                     "vocab_path": variant.vocab_path},

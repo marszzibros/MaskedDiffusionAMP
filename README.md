@@ -83,3 +83,18 @@ python evaluation/run.py results/samples.csv
 `model-epoch_N.ckpt` every `--save_every` epochs and `model-final.ckpt`. `sample.py` writes a `smiles,safe` CSV.
 `--seed` (default 0) seeds torch, numpy and the data order and is recorded in `model_config.json`, so a run can be repeated
 (GPU kernels may still differ in the last digits).
+
+### The loss mode
+
+`--loss` is `pooled` by default, and `pooled` reproduces the plain model bit for bit (same checkpoint, same RNG stream).
+
+```bash
+python -m training.train --loss class_balanced             # the per-class-mean loss
+```
+
+| Flag | What it does |
+|---|---|
+| `--loss class_balanced` | Averages the per-class means (topology, chemistry, other) instead of pooling every masked token, because the two windows mask the classes over different ranges of t. |
+
+Measured before this landed here: `class_balanced` cost about 0.41 strict in both tokenizers, the largest effect in the
+sweep, so it is available for replication rather than recommended.
