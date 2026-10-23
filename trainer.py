@@ -51,7 +51,7 @@ def main():
     
     model_config = {
         "model_name": "DiT",
-        "batch_size": 16,
+        "batch_size": 64,
         "num_epochs": 501,
         "warmup_ratio": 0.05,   # ~25 epochs of warmup at 501 epochs
         "num_samples": 10,
