@@ -67,14 +67,14 @@ def main():
 
     model_config = {
         "model_name": "DiT",
-        "batch_size": 8,
+        "batch_size": 16,
         "num_epochs": 51,
         "warmup_ratio": 0.05,
         "num_samples": 10,
         "num_steps": 500,
         "learning_rate": 1e-4,
         "scheduler_name": "cosine",
-        "accumulate_grad_batches": 1,
+        "accumulate_grad_batches": 4,
         "max_length": None,         # None = fit the longest molecule in the corpus
         "topo_eta": 10.0,
         "chem_eta": 5.0,
